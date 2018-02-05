@@ -19,11 +19,11 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 import OpenSSL
+import josepy
 
 from acme import challenges
 from acme import client as acme_client
 from acme import errors as acme_errors
-from acme import jose
 from acme import messages
 from acme import standalone
 
@@ -33,9 +33,13 @@ logger.setLevel(int(os.getenv('LOGLEVEL', 20)))
 
 DIRECTORY = os.getenv('DIRECTORY', 'http://localhost:4000/directory')
 
+# URLs to control dns-test-srv
+SET_TXT = "http://localhost:8055/set-txt"
+CLEAR_TXT = "http://localhost:8055/clear-txt"
+
 def make_client(email=None):
     """Build an acme.Client and register a new account with a random key."""
-    key = jose.JWKRSA(key=rsa.generate_private_key(65537, 2048, default_backend()))
+    key = josepy.JWKRSA(key=rsa.generate_private_key(65537, 2048, default_backend()))
 
     net = acme_client.ClientNetwork(key, verify_ssl=False,
                                     user_agent="Boulder integration tester")
@@ -43,13 +47,41 @@ def make_client(email=None):
     client = acme_client.Client(DIRECTORY, key=key, net=net)
     account = client.register(messages.NewRegistration.from_data(email=email))
     client.agree_to_tos(account)
+    client.account = account
     return client
+
+class NoClientError(ValueError):
+    """
+    An error that occurs when no acme.Client is provided to a function that
+    requires one.
+    """
+    pass
+
+class EmailRequiredError(ValueError):
+    """
+    An error that occurs when a None email is provided to update_email.
+    """
+
+def update_email(client, email):
+    """
+    Use a provided acme.Client to update the client's account to the specified
+    email.
+    """
+    if client is None:
+        raise NoClientError("update_email requires a valid acme.Client argument")
+    if email is None:
+        raise EmailRequiredError("update_email requires an email argument")
+    if not email.startswith("mailto:"):
+        email = "mailto:"+ email
+    acct = client.account
+    updatedAcct = acct.update(body=acct.body.update(contact=(email,)))
+    return client.update_registration(updatedAcct)
 
 def get_chall(authz, typ):
     for chall_body in authz.body.challenges:
         if isinstance(chall_body.chall, typ):
             return chall_body
-    raise "No %s challenge found" % typ
+    raise Exception("No %s challenge found" % typ)
 
 class ValidationError(Exception):
     """An error that occurs during challenge validation."""
@@ -84,7 +116,7 @@ def issue(client, authzs, cert_output=None):
 
     cert_resource = None
     try:
-        cert_resource, _ = client.poll_and_request_issuance(jose.ComparableX509(csr), authzs)
+        cert_resource, _ = client.poll_and_request_issuance(josepy.ComparableX509(csr), authzs)
     except acme_errors.PollError as error:
         # If we get a PollError, pick the first failed authz and turn it into a more
         # useful ValidationError that contains details we can look for in tests.
@@ -112,18 +144,24 @@ def http_01_answer(client, chall_body):
           validation=validation)
 
 def do_dns_challenges(client, authzs):
+    cleanup_hosts = []
     for a in authzs:
         c = get_chall(a, challenges.DNS01)
         name, value = (c.validation_domain_name(a.body.identifier.value),
             c.validation(client.key))
-        urllib2.urlopen("http://localhost:8055/set-txt",
+        cleanup_hosts.append(name)
+        urllib2.urlopen(SET_TXT,
             data=json.dumps({
                 "host": name + ".",
                 "value": value,
             })).read()
         client.answer_challenge(c, c.response(client.key))
     def cleanup():
-        pass
+        for host in cleanup_hosts:
+            urllib2.urlopen(CLEAR_TXT,
+                data=json.dumps({
+                    "host": host + ".",
+                })).read()
     return cleanup
 
 def do_http_challenges(client, authzs):
@@ -160,16 +198,16 @@ def auth_and_issue(domains, chall_type="http-01", email=None, cert_output=None, 
     authzs = [client.request_domain_challenges(d) for d in domains]
 
     if chall_type == "http-01":
-        cleanup = do_dns_challenges(client, authzs)
-    elif chall_type == "dns-01":
         cleanup = do_http_challenges(client, authzs)
+    elif chall_type == "dns-01":
+        cleanup = do_dns_challenges(client, authzs)
     else:
         raise Exception("invalid challenge type %s" % chall_type)
 
     try:
         cert_resource = issue(client, authzs, cert_output)
         client.fetch_chain(cert_resource)
-        return cert_resource
+        return cert_resource, authzs
     finally:
         cleanup()
 

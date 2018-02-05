@@ -3,20 +3,16 @@ package main
 import (
 	"flag"
 	"os"
+	"strings"
 	"time"
 
-	"github.com/jmhodges/clock"
-
 	"github.com/letsencrypt/boulder/bdns"
-	"github.com/letsencrypt/boulder/cdr"
 	"github.com/letsencrypt/boulder/cmd"
 	"github.com/letsencrypt/boulder/features"
 	bgrpc "github.com/letsencrypt/boulder/grpc"
-	"github.com/letsencrypt/boulder/metrics"
 	"github.com/letsencrypt/boulder/va"
+	vaPB "github.com/letsencrypt/boulder/va/proto"
 )
-
-const clientName = "VA"
 
 type config struct {
 	VA struct {
@@ -37,13 +33,11 @@ type config struct {
 		// will be turned into 1.
 		DNSTries int
 
-		// Feature flag to enable enforcement of CAA SERVFAILs.
-		CAASERVFAILExceptions string
+		RemoteVAs                   []cmd.GRPCClientConfig
+		MaxRemoteValidationFailures int
 
 		Features map[string]bool
 	}
-
-	Statsd cmd.StatsdConfig
 
 	Syslog cmd.SyslogConfig
 
@@ -69,10 +63,9 @@ func main() {
 	err = features.Set(c.VA.Features)
 	cmd.FailOnError(err, "Failed to set feature flags")
 
-	stats, logger := cmd.StatsAndLogging(c.Statsd, c.Syslog)
-	scope := metrics.NewStatsdScope(stats, "VA")
+	scope, logger := cmd.StatsAndLogging(c.Syslog, c.VA.DebugAddr)
 	defer logger.AuditPanic()
-	logger.Info(cmd.VersionString(clientName))
+	logger.Info(cmd.VersionString())
 
 	pc := &cmd.PortConfig{
 		HTTPPort:  80,
@@ -89,28 +82,8 @@ func main() {
 		pc.TLSPort = c.VA.PortConfig.TLSPort
 	}
 
-	var sbc va.SafeBrowsing
-	// If the feature flag is set, use the Google safebrowsing library that
-	// implements the v4 api instead of the legacy letsencrypt fork of
-	// go-safebrowsing-api
-	if features.Enabled(features.GoogleSafeBrowsingV4) {
-		sbc, err = newGoogleSafeBrowsingV4(c.VA.GoogleSafeBrowsing, logger)
-	} else {
-		sbc, err = newGoogleSafeBrowsing(c.VA.GoogleSafeBrowsing)
-	}
+	sbc, err := newGoogleSafeBrowsingV4(c.VA.GoogleSafeBrowsing, logger)
 	cmd.FailOnError(err, "Failed to create Google Safe Browsing client")
-
-	var cdrClient *cdr.CAADistributedResolver
-	if c.VA.CAADistributedResolver != nil {
-		var err error
-		cdrClient, err = cdr.New(
-			scope,
-			c.VA.CAADistributedResolver.Timeout.Duration,
-			c.VA.CAADistributedResolver.MaxFailures,
-			c.VA.CAADistributedResolver.Proxies,
-			logger)
-		cmd.FailOnError(err, "Failed to create CAADistributedResolver")
-	}
 
 	dnsTimeout, err := time.ParseDuration(c.Common.DNSTimeout)
 	cmd.FailOnError(err, "Couldn't parse DNS timeout")
@@ -118,43 +91,61 @@ func main() {
 	if dnsTries < 1 {
 		dnsTries = 1
 	}
-	clk := clock.Default()
-	caaSERVFAILExceptions, err := bdns.ReadHostList(c.VA.CAASERVFAILExceptions)
-	cmd.FailOnError(err, "Couldn't read CAASERVFAILExceptions file")
-	var resolver bdns.DNSResolver
+	clk := cmd.Clock()
+	var resolver bdns.DNSClient
 	if !c.Common.DNSAllowLoopbackAddresses {
-		r := bdns.NewDNSResolverImpl(
+		r := bdns.NewDNSClientImpl(
 			dnsTimeout,
 			[]string{c.Common.DNSResolver},
-			caaSERVFAILExceptions,
 			scope,
 			clk,
 			dnsTries)
 		resolver = r
 	} else {
-		r := bdns.NewTestDNSResolverImpl(dnsTimeout, []string{c.Common.DNSResolver}, scope, clk, dnsTries)
+		r := bdns.NewTestDNSClientImpl(dnsTimeout, []string{c.Common.DNSResolver}, scope, clk, dnsTries)
 		resolver = r
+	}
+
+	tls, err := c.VA.TLS.Load()
+	cmd.FailOnError(err, "TLS config")
+
+	clientMetrics := bgrpc.NewClientMetrics(scope)
+	var remotes []va.RemoteVA
+	if len(c.VA.RemoteVAs) > 0 {
+		for _, rva := range c.VA.RemoteVAs {
+			vaConn, err := bgrpc.ClientSetup(&rva, tls, clientMetrics)
+			cmd.FailOnError(err, "Unable to create remote VA client")
+			remotes = append(
+				remotes,
+				va.RemoteVA{
+					bgrpc.NewValidationAuthorityGRPCClient(vaConn),
+					strings.Join(rva.ServerAddresses, ","),
+				},
+			)
+		}
 	}
 
 	vai := va.NewValidationAuthorityImpl(
 		pc,
 		sbc,
-		cdrClient,
 		resolver,
+		remotes,
+		c.VA.MaxRemoteValidationFailures,
 		c.VA.UserAgent,
 		c.VA.IssuerDomain,
 		scope,
 		clk,
 		logger)
 
-	tls, err := c.VA.TLS.Load()
-	cmd.FailOnError(err, "TLS config")
-	grpcSrv, l, err := bgrpc.NewServer(c.VA.GRPC, tls, scope)
+	serverMetrics := bgrpc.NewServerMetrics(scope)
+	grpcSrv, l, err := bgrpc.NewServer(c.VA.GRPC, tls, serverMetrics)
 	cmd.FailOnError(err, "Unable to setup VA gRPC server")
 	err = bgrpc.RegisterValidationAuthorityGRPCServer(grpcSrv, vai)
 	cmd.FailOnError(err, "Unable to register VA gRPC server")
+	vaPB.RegisterCAAServer(grpcSrv, vai)
+	cmd.FailOnError(err, "Unable to register CAA gRPC server")
 	go func() {
-		err = grpcSrv.Serve(l)
+		err = cmd.FilterShutdownErrors(grpcSrv.Serve(l))
 		cmd.FailOnError(err, "VA gRPC service failed")
 	}()
 
@@ -163,9 +154,6 @@ func main() {
 			grpcSrv.GracefulStop()
 		}
 	})
-
-	go cmd.DebugServer(c.VA.DebugAddr)
-	go cmd.ProfileCmd(scope)
 
 	select {}
 }

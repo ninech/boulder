@@ -17,7 +17,9 @@ import (
 	"golang.org/x/net/context"
 
 	"github.com/letsencrypt/boulder/core"
+	"github.com/letsencrypt/boulder/features"
 	blog "github.com/letsencrypt/boulder/log"
+	"github.com/letsencrypt/boulder/metrics"
 	"github.com/letsencrypt/boulder/policy"
 	"github.com/letsencrypt/boulder/sa"
 	"github.com/letsencrypt/boulder/sa/satest"
@@ -75,6 +77,53 @@ func BenchmarkCheckCert(b *testing.B) {
 	}
 }
 
+func TestCheckWildcardCert(t *testing.T) {
+	saDbMap, err := sa.NewDbMap(vars.DBConnSA, 0)
+	test.AssertNotError(t, err, "Couldn't connect to database")
+	saCleanup := test.ResetSATestDatabase(t)
+	defer func() {
+		saCleanup()
+	}()
+
+	_ = features.Set(map[string]bool{"WildcardDomains": true})
+	defer features.Reset()
+
+	testKey, _ := rsa.GenerateKey(rand.Reader, 1024)
+	fc := clock.NewFake()
+	fc.Add(time.Hour * 24 * 90)
+	checker := newChecker(saDbMap, fc, pa, expectedValidityPeriod)
+	issued := checker.clock.Now().Add(-time.Hour * 24 * 45)
+	goodExpiry := issued.Add(expectedValidityPeriod)
+	serial := big.NewInt(1337)
+
+	wildcardCert := x509.Certificate{
+		Subject: pkix.Name{
+			CommonName: "*.example.com",
+		},
+		NotBefore:             issued,
+		NotAfter:              goodExpiry,
+		DNSNames:              []string{"*.example.com"},
+		SerialNumber:          serial,
+		BasicConstraintsValid: true,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+	}
+	wildcardCertDer, err := x509.CreateCertificate(rand.Reader, &wildcardCert, &wildcardCert, &testKey.PublicKey, testKey)
+	test.AssertNotError(t, err, "Couldn't create certificate")
+	parsed, err := x509.ParseCertificate(wildcardCertDer)
+	test.AssertNotError(t, err, "Couldn't parse created certificate")
+	cert := core.Certificate{
+		Serial:  core.SerialToString(serial),
+		Digest:  core.Fingerprint256(wildcardCertDer),
+		Expires: parsed.NotAfter,
+		Issued:  parsed.NotBefore,
+		DER:     wildcardCertDer,
+	}
+	problems := checker.checkCert(cert)
+	for _, p := range problems {
+		t.Errorf(p)
+	}
+}
+
 func TestCheckCert(t *testing.T) {
 	saDbMap, err := sa.NewDbMap(vars.DBConnSA, 0)
 	test.AssertNotError(t, err, "Couldn't connect to database")
@@ -102,7 +151,7 @@ func TestCheckCert(t *testing.T) {
 		},
 		NotBefore:             issued,
 		NotAfter:              goodExpiry.AddDate(0, 0, 1), // Period too long
-		DNSNames:              []string{"example-a.com", "foodnotbombs.mil"},
+		DNSNames:              []string{"example-a.com", "foodnotbombs.mil", "*.foodnotbombs.mil"},
 		SerialNumber:          serial,
 		BasicConstraintsValid: false,
 	}
@@ -133,6 +182,7 @@ func TestCheckCert(t *testing.T) {
 		"Certificate has common name >64 characters long (65)":                      1,
 		"Policy Authority was willing to issue but domain 'foodnotbombs.mil' " +
 			"matches forbiddenDomains entry \"\\\\.mil$\"": 1,
+		"Policy Authority isn't willing to issue for '*.foodnotbombs.mil': Wildcard names not supported": 1,
 	}
 	for _, p := range problems {
 		_, ok := problemsMap[p]
@@ -144,7 +194,7 @@ func TestCheckCert(t *testing.T) {
 	for k := range problemsMap {
 		t.Errorf("Expected problem but didn't find it: '%s'.", k)
 	}
-	test.AssertEquals(t, len(problems), 9)
+	test.AssertEquals(t, len(problems), 10)
 
 	// Same settings as above, but the stored serial number in the DB is invalid.
 	cert.Serial = "not valid"
@@ -182,7 +232,7 @@ func TestGetAndProcessCerts(t *testing.T) {
 	fc := clock.NewFake()
 
 	checker := newChecker(saDbMap, fc, pa, expectedValidityPeriod)
-	sa, err := sa.NewSQLStorageAuthority(saDbMap, fc, blog.NewMock())
+	sa, err := sa.NewSQLStorageAuthority(saDbMap, fc, blog.NewMock(), metrics.NewNoopScope(), 1)
 	test.AssertNotError(t, err, "Couldn't create SA to insert certificates")
 	saCleanUp := test.ResetSATestDatabase(t)
 	defer func() {

@@ -2,9 +2,9 @@ Thanks for helping us build Boulder! This page contains requirements and guideli
 
 # Patch Requirements
 * All new functionality and fixed bugs must be accompanied by tests.
-* Boulder currently implements the ACME-01 draft as defined by [acme-spec](https://tools.ietf.org/html/draft-ietf-acme-acme-01). If a spec change is required for Boulder functionality, you should propose it on the ACME mailing list (acme@ietf.org), possibly accompanied by a pull request on the [spec repo](https://github.com/ietf-wg-acme/acme/).
 * All patches must meet the deployability requirements listed below.
 * We prefer pull requests from external forks be created with the ["Allow edits from maintainers"](https://github.com/blog/2247-improving-collaboration-with-forks) checkbox selected.
+* Boulder currently implements something we internally refer to as "ACME v1". It is largely the same as the IETF ACME protocol's current most draft ([ACME draft-06](https://tools.ietf.org/html/draft-ietf-acme-acme-06)). The [acme-divergences](https://github.com/letsencrypt/boulder/blob/master/docs/acme-divergences.md) document outlines the places where Boulder differs from the IETF drafts. Our [plans for an "ACME v2" endpoint](https://letsencrypt.org/2017/06/14/acme-v2-api.html) describe how we will resolve the divergences when ACME leaves draft status. If a protocol spec change is required for Boulder functionality, you should propose it on the ACME mailing list (acme@ietf.org), possibly accompanied by a pull request on the [spec repo](https://github.com/ietf-wg-acme/acme/).
 
 # Review Requirements
 * All pull requests must receive at least one positive review. Contributors are
@@ -23,6 +23,7 @@ Thanks for helping us build Boulder! This page contains requirements and guideli
 # Patch Guidelines
 * Please include helpful comments. No need to gratuitously comment clear code, but make sure it's clear why things are being done.
 * Include information in your pull request about what you're trying to accomplish with your patch.
+* Avoid named return values. See [#3017](https://github.com/letsencrypt/boulder/pull/3017) for an example of a subtle problem they can cause.
 * Do not include `XXX`s or naked `TODO`s. Use the formats:
 ```
 // TODO(<email-address>): Hoverboard + Time-machine unsupported until upstream patch.
@@ -37,6 +38,41 @@ When submitting a squash merge, the merger should copy the URL of the pull
 request into the body of the commit message.
 
 If the Travis tests are failing on your branch, you should look at the logs to figure out why. Sometimes they fail spuriously, in which case you can post a comment requesting that a project owner kick the build.
+
+# Error handling
+
+All errors must be addressed in some way: That may be simply by returning an
+error up the stack, or by handling it in some intelligent way where it is
+generated, or by explicitly ignoring it and assigning to `_`. We use the `errcheck`
+tool in our integration tests to make sure all errors are addressed. Note that
+ignoring errors, even in tests, should be rare, since they may generate
+hard-to-debug problems.
+
+We define two special types of error. `BoulderError`, defined in
+errors/errors.go, is used specifically when an typed error needs to be passed
+across an RPC boundary. For instance, if the SA returns "not found", callers
+need to be able to distinguish that from a network error. Not every error that
+may pass across an RPC boundary needs to be a BoulderError, only those errors
+that need to be handled by type elsewhere. Handling by type may be as simple as
+turning a BoulderError into a specific type of ProblemDetail.
+
+The other special type of error is `ProblemDetails`. We try to treat these as a
+presentation-layer detail, and use them only in parts of the system that are
+responsible for rendering errors to end-users, i.e. wfe and wfe2. Note
+one exception: The VA RPC layer defines its own `ProblemDetails` type, which is
+returned to the RA and stored as part of a challenge (to eventually be rendered
+to the user).
+
+Within WFE and WFE2, ProblemDetails are sent to the client by calling
+`sendError()`, which also logs the error. For internal errors like timeout,
+or any error type that we haven't specifically turned into a ProblemDetail, we
+return a ServerInternal error. This avoids unnecessarily exposing internals.
+It's possible to add additional errors to a logEvent using `.AddError()`, but
+this should only be done when there is is internal-only information to log
+that isn't redundant with the ProblemDetails sent to the user. Note that the
+final argument to `sendError()`, `ierr`, will automatically get added to the
+logEvent for ServerInternal errors, so when sending a ServerInternal error it's
+not necessary to separately call `.AddError`.
 
 # Deployability
 
@@ -190,7 +226,7 @@ You can then add a migration with:
 
 `$ goose -path ./sa/_db/ create AddWizards sql`
 
-Finally, edit the resulting file (`sa/_db/20160915101011_WizardMigrations.sql`) to define your migration:
+Finally, edit the resulting file (`sa/_db/migrations/20160915101011_AddWizards.sql`) to define your migration:
 
 ```
 -- +goose Up
@@ -200,6 +236,24 @@ ALTER TABLE people ADD isWizard BOOLEAN SET DEFAULT false;
 ALTER TABLE people DROP isWizard BOOLEAN SET DEFAULT false;
 ```
 
+# Release Process
+
+The current Boulder release process is described in the [boulder release process
+repository](https://github.com/letsencrypt/boulder-release-process). It includes
+[an example](https://github.com/letsencrypt/boulder-release-process#example) git
+history showing a regular release being tagged, a hotfix being tagged from
+a clean master, and a hotfix being tagged from a release branch because master
+was dirty.
+
+Previously we used dedicated
+[`staging`](https://github.com/letsencrypt/boulder/tree/staging) and
+[`release`](https://github.com/letsencrypt/boulder/tree/release) branches. This
+had several downsides and we frequently forgot to merge staging to release once
+code had been shipped to production. We do not use the `staging` and `release`
+branches anymore. Releases tagged from prior to Feb 1st 2017 are also outdated
+artifacts of old process (e.g. the
+[`hotfixes-2017-02-01`](https://github.com/letsencrypt/boulder/releases/tag/hotfixes%2F2017-02-01)
+tag).
 
 # Dependencies
 

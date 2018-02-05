@@ -290,7 +290,6 @@ func main() {
 			cmd.SMTPConfig
 			Features map[string]bool
 		}
-		Statsd cmd.StatsdConfig
 		Syslog cmd.SyslogConfig
 	}
 	configFile := flag.String("config", "", "File containing a JSON config.")
@@ -315,15 +314,13 @@ func main() {
 	err = features.Set(cfg.NotifyMailer.Features)
 	cmd.FailOnError(err, "Failed to set feature flags")
 
-	stats, log := cmd.StatsAndLogging(cfg.Statsd, cfg.Syslog)
-	scope := metrics.NewStatsdScope(stats, "NotificationMailer")
+	log := cmd.NewLogger(cfg.Syslog)
 	defer log.AuditPanic()
 
 	dbURL, err := cfg.NotifyMailer.DBConfig.URL()
 	cmd.FailOnError(err, "Couldn't load DB URL")
 	dbMap, err := sa.NewDbMap(dbURL, 10)
 	cmd.FailOnError(err, "Could not connect to database")
-	go sa.ReportDbConnCount(dbMap, scope)
 
 	// Load email body
 	body, err := ioutil.ReadFile(*bodyFile)
@@ -351,9 +348,10 @@ func main() {
 			cfg.NotifyMailer.Port,
 			cfg.NotifyMailer.Username,
 			smtpPassword,
+			nil,
 			*address,
 			log,
-			scope,
+			metrics.NewNoopScope(),
 			*reconnBase,
 			*reconnMax)
 	}

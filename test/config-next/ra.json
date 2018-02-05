@@ -6,11 +6,13 @@
     "dnsTries": 3,
     "debugAddr": ":8002",
     "hostnamePolicyFile": "test/hostname-policy.json",
-    "maxNames": 1000,
+    "maxNames": 100,
     "doNotForceCN": true,
     "reuseValidAuthz": true,
-    "authorizationLifetimeDays": 60,
+    "authorizationLifetimeDays": 30,
     "pendingAuthorizationLifetimeDays": 7,
+    "weakKeyDirectory": "test/example-weak-keys.json",
+    "orderLifetime": "168h",
     "tls": {
       "caCertFile": "test/grpc-creds/minica.pem",
       "certFile": "test/grpc-creds/ra.boulder/cert.pem",
@@ -18,7 +20,7 @@
     },
     "vaService": {
       "serverAddresses": ["va.boulder:19092"],
-      "timeout": "15s"
+      "timeout": "20s"
     },
     "caService": {
       "serverAddresses": ["ca.boulder:19093"],
@@ -26,7 +28,7 @@
     },
     "publisherService": {
       "serverAddresses": ["publisher.boulder:19091"],
-      "timeout": "15s"
+      "timeout": "300s"
     },
     "saService": {
       "serverAddresses": ["sa.boulder:19095"],
@@ -40,9 +42,12 @@
       ]
     },
     "features": {
-      "IDNASupport": true,
-      "AllowKeyRollover": true,
-      "AllowTLS02Challenges": true
+      "WildcardDomains": true,
+      "TLSSNIRevalidation": true,
+      "AllowTLS02Challenges": true,
+      "CountCertificatesExact": true,
+      "ReusePendingAuthz": true,
+      "EnforceChallengeDisable": true
     }
   },
 
@@ -51,12 +56,8 @@
       "http-01": true,
       "tls-sni-01": true,
       "dns-01": true
-    }
-  },
-
-  "statsd": {
-    "server": "localhost:8125",
-    "prefix": "Boulder"
+    },
+    "challengesWhitelistFile": "test/challenges-whitelist.json"
   },
 
   "syslog": {

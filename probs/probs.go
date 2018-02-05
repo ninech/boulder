@@ -7,17 +7,21 @@ import (
 
 // Error types that can be used in ACME payloads
 const (
-	ConnectionProblem            = ProblemType("urn:acme:error:connection")
-	MalformedProblem             = ProblemType("urn:acme:error:malformed")
-	ServerInternalProblem        = ProblemType("urn:acme:error:serverInternal")
-	TLSProblem                   = ProblemType("urn:acme:error:tls")
-	UnauthorizedProblem          = ProblemType("urn:acme:error:unauthorized")
-	UnknownHostProblem           = ProblemType("urn:acme:error:unknownHost")
-	RateLimitedProblem           = ProblemType("urn:acme:error:rateLimited")
-	BadNonceProblem              = ProblemType("urn:acme:error:badNonce")
-	InvalidEmailProblem          = ProblemType("urn:acme:error:invalidEmail")
-	RejectedIdentifierProblem    = ProblemType("urn:acme:error:rejectedIdentifier")
-	UnsupportedIdentifierProblem = ProblemType("urn:acme:error:unsupportedIdentifier")
+	ConnectionProblem          = ProblemType("connection")
+	MalformedProblem           = ProblemType("malformed")
+	ServerInternalProblem      = ProblemType("serverInternal")
+	TLSProblem                 = ProblemType("tls")
+	UnauthorizedProblem        = ProblemType("unauthorized")
+	UnknownHostProblem         = ProblemType("unknownHost")
+	RateLimitedProblem         = ProblemType("rateLimited")
+	BadNonceProblem            = ProblemType("badNonce")
+	InvalidEmailProblem        = ProblemType("invalidEmail")
+	RejectedIdentifierProblem  = ProblemType("rejectedIdentifier")
+	AccountDoesNotExistProblem = ProblemType("accountDoesNotExist")
+	CAAProblem                 = ProblemType("caa")
+
+	V1ErrorNS = "urn:acme:error:"
+	V2ErrorNS = "urn:ietf:params:acme:error:"
 )
 
 // ProblemType defines the error types in the ACME protocol
@@ -49,11 +53,21 @@ func ProblemDetailsToStatusCode(prob *ProblemDetails) int {
 		return prob.HTTPStatus
 	}
 	switch prob.Type {
-	case ConnectionProblem, MalformedProblem, TLSProblem, UnknownHostProblem, BadNonceProblem, InvalidEmailProblem, RejectedIdentifierProblem, UnsupportedIdentifierProblem:
+	case
+		ConnectionProblem,
+		MalformedProblem,
+		TLSProblem,
+		UnknownHostProblem,
+		BadNonceProblem,
+		InvalidEmailProblem,
+		RejectedIdentifierProblem,
+		AccountDoesNotExistProblem:
 		return http.StatusBadRequest
 	case ServerInternalProblem:
 		return http.StatusInternalServerError
-	case UnauthorizedProblem:
+	case
+		UnauthorizedProblem,
+		CAAProblem:
 		return http.StatusForbidden
 	case RateLimitedProblem:
 		return statusTooManyRequests
@@ -77,16 +91,6 @@ func BadNonce(detail string) *ProblemDetails {
 func RejectedIdentifier(detail string) *ProblemDetails {
 	return &ProblemDetails{
 		Type:       RejectedIdentifierProblem,
-		Detail:     detail,
-		HTTPStatus: http.StatusBadRequest,
-	}
-}
-
-// UnsupportedIdentifier returns a ProblemDetails with a UnsupportedIdentifierProblem and a 400 Bad
-// Request status code.
-func UnsupportedIdentifier(detail string) *ProblemDetails {
-	return &ProblemDetails{
-		Type:       UnsupportedIdentifierProblem,
 		Detail:     detail,
 		HTTPStatus: http.StatusBadRequest,
 	}
@@ -209,5 +213,24 @@ func TLSError(detail string) *ProblemDetails {
 		Type:       TLSProblem,
 		Detail:     detail,
 		HTTPStatus: http.StatusBadRequest,
+	}
+}
+
+// AccountDoesNotExist returns a ProblemDetails representing an
+// AccountDoesNotExistProblem error
+func AccountDoesNotExist(detail string) *ProblemDetails {
+	return &ProblemDetails{
+		Type:       AccountDoesNotExistProblem,
+		Detail:     detail,
+		HTTPStatus: http.StatusBadRequest,
+	}
+}
+
+// CAA returns a ProblemDetails representing a CAAProblem
+func CAA(detail string) *ProblemDetails {
+	return &ProblemDetails{
+		Type:       CAAProblem,
+		Detail:     detail,
+		HTTPStatus: http.StatusForbidden,
 	}
 }

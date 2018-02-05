@@ -11,49 +11,30 @@ import (
 	"os"
 
 	"github.com/cloudflare/cfssl/helpers"
-	"github.com/jmhodges/clock"
 	"github.com/letsencrypt/pkcs11key"
 	"google.golang.org/grpc"
 
 	"github.com/letsencrypt/boulder/ca"
+	"github.com/letsencrypt/boulder/ca/config"
 	caPB "github.com/letsencrypt/boulder/ca/proto"
 	"github.com/letsencrypt/boulder/cmd"
 	"github.com/letsencrypt/boulder/core"
 	"github.com/letsencrypt/boulder/features"
 	"github.com/letsencrypt/boulder/goodkey"
 	bgrpc "github.com/letsencrypt/boulder/grpc"
-	"github.com/letsencrypt/boulder/metrics"
 	"github.com/letsencrypt/boulder/policy"
 	sapb "github.com/letsencrypt/boulder/sa/proto"
 )
 
-const clientName = "CA"
-
 type config struct {
-	CA cmd.CAConfig
+	CA ca_config.CAConfig
 
 	PA cmd.PAConfig
 
-	Statsd cmd.StatsdConfig
-
 	Syslog cmd.SyslogConfig
-
-	Common struct {
-		// Path to a PEM-encoded copy of the issuer certificate.
-		IssuerCert string
-	}
 }
 
 func loadIssuers(c config) ([]ca.Issuer, error) {
-	if c.CA.Key != nil {
-		issuerConfig := *c.CA.Key
-		issuerConfig.CertFile = c.Common.IssuerCert
-		priv, cert, err := loadIssuer(issuerConfig)
-		return []ca.Issuer{{
-			Signer: priv,
-			Cert:   cert,
-		}}, err
-	}
 	var issuers []ca.Issuer
 	for _, issuerConfig := range c.CA.Issuers {
 		priv, cert, err := loadIssuer(issuerConfig)
@@ -66,7 +47,7 @@ func loadIssuers(c config) ([]ca.Issuer, error) {
 	return issuers, nil
 }
 
-func loadIssuer(issuerConfig cmd.IssuerConfig) (crypto.Signer, *x509.Certificate, error) {
+func loadIssuer(issuerConfig ca_config.IssuerConfig) (crypto.Signer, *x509.Certificate, error) {
 	cert, err := core.LoadCert(issuerConfig.CertFile)
 	if err != nil {
 		return nil, nil, err
@@ -83,7 +64,7 @@ func loadIssuer(issuerConfig cmd.IssuerConfig) (crypto.Signer, *x509.Certificate
 	return signer, cert, err
 }
 
-func loadSigner(issuerConfig cmd.IssuerConfig) (crypto.Signer, error) {
+func loadSigner(issuerConfig ca_config.IssuerConfig) (crypto.Signer, error) {
 	if issuerConfig.File != "" {
 		keyBytes, err := ioutil.ReadFile(issuerConfig.File)
 		if err != nil {
@@ -140,10 +121,9 @@ func main() {
 	err = features.Set(c.CA.Features)
 	cmd.FailOnError(err, "Failed to set feature flags")
 
-	stats, logger := cmd.StatsAndLogging(c.Statsd, c.Syslog)
-	scope := metrics.NewStatsdScope(stats, "CA")
+	scope, logger := cmd.StatsAndLogging(c.Syslog, c.CA.DebugAddr)
 	defer logger.AuditPanic()
-	logger.Info(cmd.VersionString(clientName))
+	logger.Info(cmd.VersionString())
 
 	cmd.FailOnError(c.PA.CheckChallenges(), "Invalid PA configuration")
 
@@ -159,15 +139,8 @@ func main() {
 	issuers, err := loadIssuers(c)
 	cmd.FailOnError(err, "Couldn't load issuers")
 
-	cai, err := ca.NewCertificateAuthorityImpl(
-		c.CA,
-		clock.Default(),
-		scope,
-		issuers,
-		goodkey.NewKeyPolicy(),
-		logger)
-	cmd.FailOnError(err, "Failed to create CA impl")
-	cai.PA = pa
+	kp, err := goodkey.NewKeyPolicy(c.CA.WeakKeyFile)
+	cmd.FailOnError(err, "Unable to create key policy")
 
 	var tls *tls.Config
 	if c.CA.TLS.CertFile != nil {
@@ -175,30 +148,43 @@ func main() {
 		cmd.FailOnError(err, "TLS config")
 	}
 
-	conn, err := bgrpc.ClientSetup(c.CA.SAService, tls, scope)
+	clientMetrics := bgrpc.NewClientMetrics(scope)
+	conn, err := bgrpc.ClientSetup(c.CA.SAService, tls, clientMetrics)
 	cmd.FailOnError(err, "Failed to load credentials and create gRPC connection to SA")
-	cai.SA = bgrpc.NewStorageAuthorityClient(sapb.NewStorageAuthorityClient(conn))
+	sa := bgrpc.NewStorageAuthorityClient(sapb.NewStorageAuthorityClient(conn))
 
+	cai, err := ca.NewCertificateAuthorityImpl(
+		c.CA,
+		sa,
+		pa,
+		cmd.Clock(),
+		scope,
+		issuers,
+		kp,
+		logger)
+	cmd.FailOnError(err, "Failed to create CA impl")
+
+	serverMetrics := bgrpc.NewServerMetrics(scope)
 	var caSrv *grpc.Server
 	if c.CA.GRPCCA != nil {
-		s, l, err := bgrpc.NewServer(c.CA.GRPCCA, tls, scope)
+		s, l, err := bgrpc.NewServer(c.CA.GRPCCA, tls, serverMetrics)
 		cmd.FailOnError(err, "Unable to setup CA gRPC server")
 		caWrapper := bgrpc.NewCertificateAuthorityServer(cai)
 		caPB.RegisterCertificateAuthorityServer(s, caWrapper)
 		go func() {
-			err = s.Serve(l)
+			err = cmd.FilterShutdownErrors(s.Serve(l))
 			cmd.FailOnError(err, "CA gRPC service failed")
 		}()
 		caSrv = s
 	}
 	var ocspSrv *grpc.Server
 	if c.CA.GRPCOCSPGenerator != nil {
-		s, l, err := bgrpc.NewServer(c.CA.GRPCOCSPGenerator, tls, scope)
+		s, l, err := bgrpc.NewServer(c.CA.GRPCOCSPGenerator, tls, serverMetrics)
 		cmd.FailOnError(err, "Unable to setup CA gRPC server")
 		caWrapper := bgrpc.NewCertificateAuthorityServer(cai)
 		caPB.RegisterOCSPGeneratorServer(s, caWrapper)
 		go func() {
-			err = s.Serve(l)
+			err = cmd.FilterShutdownErrors(s.Serve(l))
 			cmd.FailOnError(err, "OCSPGenerator gRPC service failed")
 		}()
 		ocspSrv = s
@@ -212,9 +198,6 @@ func main() {
 			ocspSrv.GracefulStop()
 		}
 	})
-
-	go cmd.DebugServer(c.CA.DebugAddr)
-	go cmd.ProfileCmd(scope)
 
 	select {}
 }

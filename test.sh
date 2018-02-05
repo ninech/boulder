@@ -9,8 +9,9 @@ fi
 # RUN variable with the ones you want (see .travis.yml for an example).
 # Order doesn't matter. Note: godep-restore is specifically left out of the
 # defaults, because we don't want to run it locally (would be too disruptive to
-# GOPATH).
-RUN=${RUN:-vet fmt migrations unit integration errcheck}
+# GOPATH). We also omit coverage by default on local runs because it generates
+# artifacts on disk that aren't needed.
+RUN=${RUN:-vet fmt migrations unit integration errcheck dashlint}
 
 # The list of segments to hard fail on, as opposed to continuing to the end of
 # the unit tests before failing.
@@ -74,29 +75,10 @@ function die() {
 
 function run_unit_tests() {
   if [ "${TRAVIS}" == "true" ]; then
-
-    # The deps variable is the imports of the packages under test that
-    # are not stdlib packages. We can then install them with the race
-    # detector enabled to prevent our individual `go test` calls from
-    # building them multiple times.
-    all_shared_imports=$(go list -f '{{ join .Imports "\n" }}' ${TESTPATHS} | sort | uniq)
-    deps=$(go list -f '{{ if not .Standard }}{{ .ImportPath }}{{ end }}' ${all_shared_imports})
-    echo "go installing race detector enabled dependencies"
-    go install -race $deps
-
-    # Run each test by itself for Travis, so we can get coverage
-    for path in ${TESTPATHS}; do
-      dir=$(basename $path)
-      go test -race -cover -coverprofile=${dir}.coverprofile ${path} || FAILURE=1
-    done
-
-    # Gather all the coverprofiles
-    run gover
-
-    # We don't use the run function here because sometimes goveralls fails to
-    # contact the server and exits with non-zero status, but we don't want to
-    # treat that as a failure.
-    goveralls -v -coverprofile=gover.coverprofile -service=travis-ci
+    # Run the full suite of tests once with the -race flag. Since this isn't
+    # running tests individually we can't collect coverage information.
+    echo "running test suite with race detection"
+    run go test -race -p 1 ${TESTPATHS}
   else
     # When running locally, we skip the -race flag for speedier test runs. We
     # also pass -p 1 to require the tests to run serially instead of in
@@ -107,6 +89,26 @@ function run_unit_tests() {
     # https://github.com/letsencrypt/boulder/issues/1499
     run go test -p 1 $GOTESTFLAGS ${TESTPATHS}
   fi
+}
+
+function run_test_coverage() {
+  # Run each test by itself for Travis, so we can get coverage. We skip using
+  # the -race flag here because we have already done a full test run with
+  # -race in `run_unit_tests` and it adds substantial overhead to run every
+  # test with -race independently
+  echo "running test suite with coverage enabled and without race detection"
+  for path in ${TESTPATHS}; do
+    dir=$(basename $path)
+    run go test -cover -coverprofile=${dir}.coverprofile ${path}
+  done
+
+  # Gather all the coverprofiles
+  run gover
+
+  # We don't use the run function here because sometimes goveralls fails to
+  # contact the server and exits with non-zero status, but we don't want to
+  # treat that as a failure.
+  goveralls -v -coverprofile=gover.coverprofile -service=travis-ci
 }
 
 #
@@ -168,6 +170,13 @@ if [[ "$RUN" =~ "unit" ]] ; then
 fi
 
 #
+# Unit Test Coverage.
+#
+if [[ "$RUN" =~ "coverage" ]] ; then
+  run_test_coverage
+fi
+
+#
 # Integration tests
 #
 if [[ "$RUN" =~ "integration" ]] ; then
@@ -175,8 +184,22 @@ if [[ "$RUN" =~ "integration" ]] ; then
   start_context "integration"
 
   source ${CERTBOT_PATH:-/certbot}/${VENV_NAME:-venv}/bin/activate
-  run python test/integration-test.py --chisel
+  REQUESTS_CA_BUNDLE=test/wfe-tls/minica.pem DIRECTORY=http://boulder:4000/directory \
+    run python2 test/integration-test.py --chisel
   end_context #integration
+fi
+
+if [[ "$RUN" =~ "acme-v2" ]] ; then
+  # If you're developing against a local Certbot repo, edit docker-compose.yml
+  # to mount it as a volume under /certbot, and run tests with
+  # docker-compose run -e RUN=acme-v2 -e CERTBOT_REPO=/certbot boulder ./test.sh
+  CERTBOT_REPO=${CERTBOT_REPO:-https://github.com/certbot/certbot}
+  CERTBOT_DIR=$(mktemp -d -t certbotXXXX)
+  git clone $CERTBOT_REPO $CERTBOT_DIR
+  (cd $CERTBOT_DIR ; git checkout acme-v2-integration; ./tools/venv.sh)
+  source $CERTBOT_DIR/venv/bin/activate
+  REQUESTS_CA_BUNDLE=test/wfe-tls/minica.pem DIRECTORY=https://boulder:4431/directory \
+    run python2 test/integration-test-v2.py
 fi
 
 # Run godep-restore (happens only in Travis) to check that the hashes in
@@ -186,9 +209,10 @@ if [[ "$RUN" =~ "godep-restore" ]] ; then
   run_and_expect_silence godep restore
   # Run godep save and do a diff, to ensure that the version we got from
   # `godep restore` matched what was in the remote repo.
-  cp Godeps/Godeps.json Godeps/Godeps.json.head
+  cp Godeps/Godeps.json /tmp/Godeps.json.head
+  run_and_expect_silence rm -rf Godeps/ vendor/
   run_and_expect_silence godep save ./...
-  run_and_expect_silence diff <(sed /GodepVersion/d Godeps/Godeps.json.head) <(sed /GodepVersion/d Godeps/Godeps.json)
+  run_and_expect_silence diff <(sed /GodepVersion/d /tmp/Godeps.json.head) <(sed /GodepVersion/d Godeps/Godeps.json)
   run_and_expect_silence git diff --exit-code -- ./vendor/
   end_context #godep-restore
 fi
@@ -203,7 +227,7 @@ fi
 if [[ "$RUN" =~ "errcheck" ]] ; then
   start_context "errcheck"
   run_and_expect_silence errcheck \
-    -ignore io:Write,os:Remove,net/http:Write,github.com/letsencrypt/boulder/metrics:.*,github.com/letsencrypt/boulder/vendor/github.com/cactus/go-statsd-client/statsd:.* \
+    -ignore io:Write,os:Remove,net/http:Write \
     $(echo ${TESTPATHS} | tr ' ' '\n' | grep -v test)
   end_context #errcheck
 fi
@@ -240,6 +264,12 @@ if [[ "$RUN" =~ "rpm" ]]; then
   start_context "rpm"
   run make rpm
   end_context #"rpm"
+fi
+
+if [[ "$RUN" =~ "dashlint" ]]; then
+  start_context "dashlint"
+  run python test/grafana/lint.py
+  end_context #"dashlint"
 fi
 
 exit ${FAILURE}

@@ -7,17 +7,16 @@ type ErrorType int
 
 const (
 	InternalServer ErrorType = iota
-	NotSupported
+	_
 	Malformed
 	Unauthorized
 	NotFound
-	SignatureValidation
 	RateLimit
-	TooManyRequests
 	RejectedIdentifier
-	UnsupportedIdentifier
 	InvalidEmail
 	ConnectionFailure
+	WrongAuthorizationState
+	CAA
 )
 
 // BoulderError represents internal Boulder errors
@@ -51,10 +50,6 @@ func InternalServerError(msg string, args ...interface{}) error {
 	return New(InternalServer, msg, args...)
 }
 
-func NotSupportedError(msg string, args ...interface{}) error {
-	return New(NotSupported, msg, args...)
-}
-
 func MalformedError(msg string, args ...interface{}) error {
 	return New(Malformed, msg, args...)
 }
@@ -67,24 +62,15 @@ func NotFoundError(msg string, args ...interface{}) error {
 	return New(NotFound, msg, args...)
 }
 
-func SignatureValidationError(msg string, args ...interface{}) error {
-	return New(SignatureValidation, msg, args...)
-}
-
 func RateLimitError(msg string, args ...interface{}) error {
-	return New(RateLimit, msg, args...)
-}
-
-func TooManyRequestsError(msg string, args ...interface{}) error {
-	return New(TooManyRequests, msg, args...)
+	return &BoulderError{
+		Type:   RateLimit,
+		Detail: fmt.Sprintf(msg+": see https://letsencrypt.org/docs/rate-limits/", args...),
+	}
 }
 
 func RejectedIdentifierError(msg string, args ...interface{}) error {
 	return New(RejectedIdentifier, msg, args...)
-}
-
-func UnsupportedIdentifierError(msg string, args ...interface{}) error {
-	return New(UnsupportedIdentifier, msg, args...)
 }
 
 func InvalidEmailError(msg string, args ...interface{}) error {
@@ -93,4 +79,12 @@ func InvalidEmailError(msg string, args ...interface{}) error {
 
 func ConnectionFailureError(msg string, args ...interface{}) error {
 	return New(ConnectionFailure, msg, args...)
+}
+
+func WrongAuthorizationStateError(msg string, args ...interface{}) error {
+	return New(WrongAuthorizationState, msg, args...)
+}
+
+func CAAError(msg string, args ...interface{}) error {
+	return New(CAA, msg, args...)
 }

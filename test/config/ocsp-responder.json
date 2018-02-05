@@ -10,16 +10,12 @@
     "debugAddr": ":8005"
   },
 
-  "statsd": {
-    "server": "localhost:8125",
-    "prefix": "Boulder"
-  },
-
   "syslog": {
-    "stdoutlevel": 6
+   "stdoutlevel": 6,
+   "sysloglevel": 4
  },
 
   "common": {
-    "issuerCert": "test/test-ca.pem"
+    "issuerCert": "test/test-ca2.pem"
   }
 }

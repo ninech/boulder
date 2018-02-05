@@ -22,7 +22,7 @@ import (
 	"time"
 	"unicode"
 
-	jose "gopkg.in/square/go-jose.v1"
+	jose "gopkg.in/square/go-jose.v2"
 
 	blog "github.com/letsencrypt/boulder/log"
 )
@@ -44,67 +44,20 @@ func init() {
 	expvar.NewString("BuildTime").Set(BuildTime)
 }
 
-// Errors
-
-// InternalServerError indicates that something has gone wrong unrelated to the
-// user's input, and will be considered by the Load Balancer as an indication
-// that this Boulder instance may be malfunctioning. Minimally, returning this
-// will cause an error page to be generated at the CDN/LB for the client.
-// Consequently, you should only use this error when Boulder's internal
-// constraints have been violated.
-type InternalServerError string
-
-// NotSupportedError indicates a method is not yet supported
-type NotSupportedError string
-
-// MalformedRequestError indicates the user data was improper
-type MalformedRequestError string
-
-// UnauthorizedError indicates the user did not satisfactorily prove identity
-type UnauthorizedError string
-
-// NotFoundError indicates the destination was unknown. Whoa oh oh ohhh.
-type NotFoundError string
-
-// LengthRequiredError indicates a POST was sent with no Content-Length.
-type LengthRequiredError string
-
-// SignatureValidationError indicates that the user's signature could not
-// be verified, either through adversarial activity, or misconfiguration of
-// the user client.
-type SignatureValidationError string
-
-// NoSuchRegistrationError indicates that a registration could not be found.
-type NoSuchRegistrationError string
-
-// RateLimitedError indicates the user has hit a rate limit
-type RateLimitedError string
-
-// TooManyRPCRequestsError indicates an RPC server has hit it's concurrent request
-// limit
-type TooManyRPCRequestsError string
-
-// BadNonceError indicates an empty of invalid nonce was provided
-type BadNonceError string
-
-func (e InternalServerError) Error() string      { return string(e) }
-func (e NotSupportedError) Error() string        { return string(e) }
-func (e MalformedRequestError) Error() string    { return string(e) }
-func (e UnauthorizedError) Error() string        { return string(e) }
-func (e NotFoundError) Error() string            { return string(e) }
-func (e LengthRequiredError) Error() string      { return string(e) }
-func (e SignatureValidationError) Error() string { return string(e) }
-func (e NoSuchRegistrationError) Error() string  { return string(e) }
-func (e RateLimitedError) Error() string         { return string(e) }
-func (e TooManyRPCRequestsError) Error() string  { return string(e) }
-func (e BadNonceError) Error() string            { return string(e) }
-
 // Random stuff
+
+type randSource interface {
+	Read(p []byte) (n int, err error)
+}
+
+// RandReader is used so that it can be replaced in tests that require
+// deterministic output
+var RandReader randSource = rand.Reader
 
 // RandomString returns a randomly generated string of the requested length.
 func RandomString(byteLength int) string {
 	b := make([]byte, byteLength)
-	_, err := io.ReadFull(rand.Reader, b)
+	_, err := io.ReadFull(RandReader, b)
 	if err != nil {
 		panic(fmt.Sprintf("Error reading random bytes: %s", err))
 	}
@@ -138,12 +91,12 @@ func Fingerprint256(data []byte) string {
 // provided public key.
 func KeyDigest(key crypto.PublicKey) (string, error) {
 	switch t := key.(type) {
-	case *jose.JsonWebKey:
+	case *jose.JSONWebKey:
 		if t == nil {
 			return "", fmt.Errorf("Cannot compute digest of nil key")
 		}
 		return KeyDigest(t.Key)
-	case jose.JsonWebKey:
+	case jose.JSONWebKey:
 		return KeyDigest(t.Key)
 	default:
 		keyDER, err := x509.MarshalPKIXPublicKey(key)

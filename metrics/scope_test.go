@@ -1,57 +1,36 @@
 package metrics
 
 import (
+	"io/ioutil"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
-	"time"
 
-	"github.com/golang/mock/gomock"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-func TestScopedStatsStatsd(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-	statter := NewMockStatter(ctrl)
-	stats := NewStatsdScope(statter, "fake")
-	statter.EXPECT().Inc("fake.counter", int64(2), float32(1.0)).Return(nil)
-	stats.Inc("counter", 2)
-
-	statter.EXPECT().Dec("fake.counter", int64(2), float32(1.0)).Return(nil)
-	stats.Dec("counter", 2)
-
-	statter.EXPECT().Gauge("fake.gauge", int64(2), float32(1.0)).Return(nil)
-	stats.Gauge("gauge", 2)
-	statter.EXPECT().GaugeDelta("fake.delta", int64(2), float32(1.0)).Return(nil)
-	stats.GaugeDelta("delta", 2)
-	statter.EXPECT().Timing("fake.latency", int64(2), float32(1.0)).Return(nil)
-	stats.Timing("latency", 2)
-	statter.EXPECT().TimingDuration("fake.latency", 2*time.Second, float32(1.0)).Return(nil)
-	stats.TimingDuration("latency", 2*time.Second)
-	statter.EXPECT().Set("fake.something", "value", float32(1.0)).Return(nil)
-	stats.Set("something", "value")
-	statter.EXPECT().SetInt("fake.someint", int64(10), float32(1.0)).Return(nil)
-	stats.SetInt("someint", 10)
-	statter.EXPECT().Raw("fake.raw", "raw value", float32(1.0)).Return(nil)
-	stats.Raw("raw", "raw value")
-
-	s := stats.NewScope("foobar")
-	statter.EXPECT().Inc("fake.foobar.counter", int64(3), float32(1.0)).Return(nil)
-	s.Inc("counter", 3)
-	ss := stats.NewScope("another", "level")
-	statter.EXPECT().Inc("fake.foobar.counter", int64(4), float32(1.0)).Return(nil)
-	s.Inc("counter", 4)
-
-	if stats.Scope() != "fake" {
-		t.Errorf(`expected "fake", got %#v`, stats.Scope())
+func TestPromScope(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	testSrv := httptest.NewServer(promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+	defer testSrv.Close()
+	scope := NewPromScope(reg)
+	scope2 := scope.NewScope("component")
+	scope.Inc("boops", 1)
+	scope2.Inc("bleeps", 1)
+	resp, err := http.Get(testSrv.URL + "/metrics")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if s.Scope() != "fake.foobar" {
-		t.Errorf(`expected "fake.foobar", got %#v`, s.Scope())
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if ss.Scope() != "fake.another.level" {
-		t.Errorf(`expected "fake.foobar", got %#v`, s.Scope())
+	if !strings.Contains(string(body), "boops 1\n") {
+		t.Error("No boops found:\n", string(body))
 	}
-
-	twoScope := NewStatsdScope(statter, "fake", "bang")
-	statter.EXPECT().Inc("fake.bang.counter", int64(7), float32(1.0)).Return(nil)
-	twoScope.Inc("counter", 7)
-
+	if !strings.Contains(string(body), "component_bleeps 1\n") {
+		t.Error("No component bleeps found:\n", string(body))
+	}
 }

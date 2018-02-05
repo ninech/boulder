@@ -22,12 +22,28 @@ message ValidationRecord {
 
         repeated string authorities = 5;
         optional string url = 6;
+        // A list of addresses tried before the address used (see
+        // core/objects.go and the comment on the ValidationRecord structure
+        // definition for more information.
+        repeated bytes addressesTried = 7; // net.IP.MarshalText()
 }
 
 message ProblemDetails {
 	optional string problemType = 1;
 	optional string detail = 2;
 	optional int32 httpStatus = 3;
+}
+
+message Precertificate {
+  optional bytes der = 1;
+}
+
+message SCTFetchingConfig {
+    repeated SCTFetchingLogSet logSets = 1;
+}
+
+message SCTFetchingLogSet {
+    repeated string logURLs = 1;
 }
 
 message Certificate {
@@ -58,6 +74,18 @@ message Authorization {
         optional int64 expires = 5; // Unix timestamp (nanoseconds)
         repeated core.Challenge challenges = 6;
         optional bytes combinations = 7;
+}
+
+message Order {
+        optional int64 id = 1;
+        optional int64 registrationID = 2;
+        optional int64 expires = 3;
+        optional bytes error = 4;
+        optional string certificateSerial = 5;
+        repeated string authorizations = 6;
+        optional string status = 7;
+        repeated string names = 8;
+        optional bool beganProcessing = 9;
 }
 
 message Empty {}

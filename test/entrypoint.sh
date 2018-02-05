@@ -19,6 +19,7 @@ wait_tcp_port() {
 	sleep 1
     done
     exec 6>&-
+    echo "Connected to $host:$port"
 }
 cat <<EOF >> /etc/hosts
 127.0.0.1 sa.boulder ra.boulder wfe.boulder ca.boulder va.boulder publisher.boulder ocsp-updater.boulder admin-revoker.boulder
@@ -46,8 +47,4 @@ if [[ $# -eq 0 ]]; then
     exec ./start.py
 fi
 
-# TODO(jsha): Change to an unprivileged user before running commands. Currently,
-# running as an unprivileged user causes the certbot integration test to fail
-# during the test of the manual plugin. There's a call to killpg in there that
-# kills the whole test, but only when run under `su buser -c "..."`
 exec $@

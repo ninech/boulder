@@ -126,8 +126,8 @@ func TestVersionString(t *testing.T) {
 	core.BuildTime = "RightNow!"
 	core.BuildHost = "Localhost"
 
-	versionStr := VersionString("test")
-	expected := fmt.Sprintf("Versions: test=(TestBuildID RightNow!) Golang=(%s) BuildHost=(Localhost)", runtime.Version())
+	versionStr := VersionString()
+	expected := fmt.Sprintf("Versions: cmd.test=(TestBuildID RightNow!) Golang=(%s) BuildHost=(Localhost)", runtime.Version())
 	test.AssertEquals(t, versionStr, expected)
 }
 
@@ -145,7 +145,7 @@ func TestLoadCert(t *testing.T) {
 			"open ../does/not/exist: no such file or directory",
 		},
 		{
-			"../test/test-ca.key",
+			"./testdata/key.pem",
 			"Invalid certificate value returned",
 		},
 	}
@@ -156,8 +156,8 @@ func TestLoadCert(t *testing.T) {
 		test.AssertEquals(t, err.Error(), tc.expectedErr)
 	}
 
-	bytes, err := LoadCert("../test/test-ca.pem")
-	test.AssertNotError(t, err, "LoadCert(../test/test-ca.pem) errored")
+	bytes, err := LoadCert("./testdata/cert.pem")
+	test.AssertNotError(t, err, "LoadCert(\"./testdata/cert.pem\") errored")
 	test.AssertNotEquals(t, len(bytes), 0)
 }
 
@@ -171,12 +171,9 @@ func TestReadConfigFile(t *testing.T) {
 			PasswordConfig
 			SMTPConfig
 		}
-		Statsd StatsdConfig
-		Syslog SyslogConfig
 	}
 	var c config
 	err = ReadConfigFile("../test/config/notify-mailer.json", &c)
 	test.AssertNotError(t, err, "ReadConfigFile(../test/config/notify-mailer.json) errored")
 	test.AssertEquals(t, c.NotifyMailer.SMTPConfig.Server, "localhost")
-	test.AssertEquals(t, c.Syslog.StdoutLevel, 6)
 }

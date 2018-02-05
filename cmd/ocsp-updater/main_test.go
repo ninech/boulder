@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/sha256"
-	"crypto/x509"
 	"database/sql"
 	"encoding/base64"
 	"errors"
@@ -15,6 +14,7 @@ import (
 	"golang.org/x/net/context"
 	"gopkg.in/go-gorp/gorp.v2"
 
+	caPB "github.com/letsencrypt/boulder/ca/proto"
 	"github.com/letsencrypt/boulder/cmd"
 	"github.com/letsencrypt/boulder/core"
 	"github.com/letsencrypt/boulder/features"
@@ -34,8 +34,16 @@ type mockCA struct {
 	sleepTime time.Duration
 }
 
-func (ca *mockCA) IssueCertificate(_ context.Context, csr x509.CertificateRequest, regID int64) (core.Certificate, error) {
+func (ca *mockCA) IssueCertificate(_ context.Context, _ *caPB.IssueCertificateRequest) (core.Certificate, error) {
 	return core.Certificate{}, nil
+}
+
+func (ca *mockCA) IssuePrecertificate(_ context.Context, _ *caPB.IssueCertificateRequest) (*caPB.IssuePrecertificateResponse, error) {
+	return nil, errors.New("IssuePrecertificate is not implemented by mockCA")
+}
+
+func (ca *mockCA) IssueCertificateForPrecertificate(_ context.Context, _ *caPB.IssueCertificateForPrecertificateRequest) (core.Certificate, error) {
+	return core.Certificate{}, errors.New("IssueCertificateForPrecertificate is not implemented by mockCA")
 }
 
 func (ca *mockCA) GenerateOCSP(_ context.Context, xferObj core.OCSPSigningRequest) (ocsp []byte, err error) {
@@ -122,7 +130,7 @@ func setup(t *testing.T) (*OCSPUpdater, core.StorageAuthority, *gorp.DbMap, cloc
 	fc := clock.NewFake()
 	fc.Add(1 * time.Hour)
 
-	sa, err := sa.NewSQLStorageAuthority(dbMap, fc, log)
+	sa, err := sa.NewSQLStorageAuthority(dbMap, fc, log, metrics.NewNoopScope(), 1)
 	test.AssertNotError(t, err, "Failed to create SA")
 
 	cleanUp := test.ResetSATestDatabase(t)
@@ -471,9 +479,6 @@ func TestMissingReceiptsTick(t *testing.T) {
 	err = updater.missingReceiptsTick(ctx, 5)
 	test.AssertNotError(t, err, "Failed to run missingReceiptsTick")
 
-	// We have three logs configured from setup, and with the
-	// ResubmitMissingSCTsOnly feature flag disabled we expect that we submitted
-	// to all three logs.
 	logIDs, err := updater.getSubmittedReceipts("00")
 	test.AssertNotError(t, err, "Couldn't get submitted receipts for serial 00")
 	test.AssertEquals(t, len(logIDs), 3)
@@ -510,10 +515,6 @@ func TestMissingOnlyReceiptsTick(t *testing.T) {
 	serials, err := updater.getSerialsIssuedSince(fc.Now().Add(-2*time.Hour), 1)
 	test.AssertNotError(t, err, "Failed to retrieve serials")
 	test.AssertEquals(t, len(serials), 1)
-
-	// Enable the ResubmitMissingSCTsOnly feature flag for this test run
-	_ = features.Set(map[string]bool{"ResubmitMissingSCTsOnly": true})
-	defer features.Reset()
 
 	// Use a mock publisher so we can EXPECT specific calls
 	ctrl := gomock.NewController(t)

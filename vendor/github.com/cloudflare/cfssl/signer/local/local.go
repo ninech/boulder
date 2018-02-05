@@ -8,12 +8,10 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"io"
-	"io/ioutil"
 	"math/big"
 	"net"
 	"net/http"
@@ -27,10 +25,11 @@ import (
 	"github.com/cloudflare/cfssl/info"
 	"github.com/cloudflare/cfssl/log"
 	"github.com/cloudflare/cfssl/signer"
-	"github.com/google/certificate-transparency/go"
-	"github.com/google/certificate-transparency/go/client"
-	"github.com/google/certificate-transparency/go/jsonclient"
+	"github.com/google/certificate-transparency-go"
+	"github.com/google/certificate-transparency-go/client"
+	"github.com/google/certificate-transparency-go/jsonclient"
 	"golang.org/x/net/context"
+	"time"
 )
 
 // Signer contains a signer that uses the standard library to
@@ -68,12 +67,12 @@ func NewSigner(priv crypto.Signer, cert *x509.Certificate, sigAlgo x509.Signatur
 // and a caKey file, both PEM encoded.
 func NewSignerFromFile(caFile, caKeyFile string, policy *config.Signing) (*Signer, error) {
 	log.Debug("Loading CA: ", caFile)
-	ca, err := ioutil.ReadFile(caFile)
+	ca, err := helpers.ReadBytes(caFile)
 	if err != nil {
 		return nil, err
 	}
 	log.Debug("Loading CA key: ", caKeyFile)
-	cakey, err := ioutil.ReadFile(caKeyFile)
+	cakey, err := helpers.ReadBytes(caKeyFile)
 	if err != nil {
 		return nil, cferr.Wrap(cferr.CertificateError, cferr.ReadFailed, err)
 	}
@@ -98,14 +97,14 @@ func NewSignerFromFile(caFile, caKeyFile string, policy *config.Signing) (*Signe
 	return NewSigner(priv, parsedCa, signer.DefaultSigAlgo(priv), policy)
 }
 
-func (s *Signer) sign(template *x509.Certificate, profile *config.SigningProfile) (cert []byte, err error) {
+func (s *Signer) sign(template *x509.Certificate, profile *config.SigningProfile, notBefore time.Time, notAfter time.Time) (cert []byte, err error) {
 	var distPoints = template.CRLDistributionPoints
-	err = signer.FillTemplate(template, s.policy.Default, profile)
 	if distPoints != nil && len(distPoints) > 0 {
 		template.CRLDistributionPoints = distPoints
 	}
+	err = signer.FillTemplate(template, s.policy.Default, profile, notBefore, notAfter)
 	if err != nil {
-		return
+		return nil, err
 	}
 
 	var initRoot bool
@@ -207,7 +206,7 @@ func (s *Signer) Sign(req signer.SignRequest) (cert []byte, err error) {
 
 	if block.Type != "NEW CERTIFICATE REQUEST" && block.Type != "CERTIFICATE REQUEST" {
 		return nil, cferr.Wrap(cferr.CSRError,
-			cferr.BadRequest, errors.New("not a certificate or csr"))
+			cferr.BadRequest, errors.New("not a csr"))
 	}
 
 	csrTemplate, err := signer.ParseCertificateRequest(s, block.Bytes)
@@ -344,13 +343,13 @@ func (s *Signer) Sign(req signer.SignRequest) (cert []byte, err error) {
 		var poisonExtension = pkix.Extension{Id: signer.CTPoisonOID, Critical: true, Value: []byte{0x05, 0x00}}
 		var poisonedPreCert = certTBS
 		poisonedPreCert.ExtraExtensions = append(safeTemplate.ExtraExtensions, poisonExtension)
-		cert, err = s.sign(&poisonedPreCert, profile)
+		cert, err = s.sign(&poisonedPreCert, profile, req.NotBefore, req.NotAfter)
 		if err != nil {
 			return
 		}
 
 		derCert, _ := pem.Decode(cert)
-		prechain := []ct.ASN1Cert{derCert.Bytes, s.ca.Raw}
+		prechain := []ct.ASN1Cert{{Data: derCert.Bytes}, {Data: s.ca.Raw}}
 		var sctList []ct.SignedCertificateTimestamp
 
 		for _, server := range profile.CTLogServers {
@@ -369,7 +368,7 @@ func (s *Signer) Sign(req signer.SignRequest) (cert []byte, err error) {
 		}
 
 		var serializedSCTList []byte
-		serializedSCTList, err = serializeSCTList(sctList)
+		serializedSCTList, err = helpers.SerializeSCTList(sctList)
 		if err != nil {
 			return nil, cferr.Wrap(cferr.CTError, cferr.Unknown, err)
 		}
@@ -384,17 +383,22 @@ func (s *Signer) Sign(req signer.SignRequest) (cert []byte, err error) {
 		certTBS.ExtraExtensions = append(certTBS.ExtraExtensions, SCTListExtension)
 	}
 	var signedCert []byte
-	signedCert, err = s.sign(&certTBS, profile)
+	signedCert, err = s.sign(&certTBS, profile, req.NotBefore, req.NotAfter)
 	if err != nil {
 		return nil, err
 	}
+
+	// Get the AKI from signedCert.  This is required to support Go 1.9+.
+	// In prior versions of Go, x509.CreateCertificate updated the
+	// AuthorityKeyId of certTBS.
+	parsedCert, _ := helpers.ParseCertificatePEM(signedCert)
 
 	if s.dbAccessor != nil {
 		var certRecord = certdb.CertificateRecord{
 			Serial: certTBS.SerialNumber.String(),
 			// this relies on the specific behavior of x509.CreateCertificate
-			// which updates certTBS AuthorityKeyId from the signer's SubjectKeyId
-			AKI:     hex.EncodeToString(certTBS.AuthorityKeyId),
+			// which sets the AuthorityKeyId from the signer's SubjectKeyId
+			AKI:     hex.EncodeToString(parsedCert.AuthorityKeyId),
 			CALabel: req.Label,
 			Status:  "good",
 			Expiry:  certTBS.NotAfter,
@@ -409,22 +413,6 @@ func (s *Signer) Sign(req signer.SignRequest) (cert []byte, err error) {
 	}
 
 	return signedCert, nil
-}
-
-func serializeSCTList(sctList []ct.SignedCertificateTimestamp) ([]byte, error) {
-	var buf bytes.Buffer
-	for _, sct := range sctList {
-		sct, err := ct.SerializeSCT(sct)
-		if err != nil {
-			return nil, err
-		}
-		binary.Write(&buf, binary.BigEndian, uint16(len(sct)))
-		buf.Write(sct)
-	}
-
-	var sctListLengthField = make([]byte, 2)
-	binary.BigEndian.PutUint16(sctListLengthField, uint16(buf.Len()))
-	return bytes.Join([][]byte{sctListLengthField, buf.Bytes()}, nil), nil
 }
 
 // Info return a populated info.Resp struct or an error.
@@ -468,6 +456,11 @@ func (s *Signer) SetPolicy(policy *config.Signing) {
 // SetDBAccessor sets the signers' cert db accessor
 func (s *Signer) SetDBAccessor(dba certdb.Accessor) {
 	s.dbAccessor = dba
+}
+
+// GetDBAccessor returns the signers' cert db accessor
+func (s *Signer) GetDBAccessor() certdb.Accessor {
+	return s.dbAccessor
 }
 
 // SetReqModifier does nothing for local

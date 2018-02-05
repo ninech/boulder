@@ -1,27 +1,24 @@
 package mocks
 
 import (
-	"database/sql"
-	"encoding/json"
+	"crypto/x509"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"io/ioutil"
-	mrand "math/rand"
 	"net"
-	"net/http"
-	"strconv"
 	"time"
 
-	"github.com/cactus/go-statsd-client/statsd"
 	"github.com/jmhodges/clock"
-	"github.com/miekg/dns"
 	"golang.org/x/net/context"
-	"gopkg.in/square/go-jose.v1"
+	"gopkg.in/square/go-jose.v2"
 
 	"github.com/letsencrypt/boulder/core"
+	corepb "github.com/letsencrypt/boulder/core/proto"
 	berrors "github.com/letsencrypt/boulder/errors"
+	"github.com/letsencrypt/boulder/probs"
 	"github.com/letsencrypt/boulder/revocation"
+	sapb "github.com/letsencrypt/boulder/sa/proto"
 )
 
 // StorageAuthority is a mock
@@ -81,32 +78,74 @@ func (sa *StorageAuthority) GetRegistration(_ context.Context, id int64) (core.R
 		// Tag meaning "Malformed"
 		return core.Registration{}, nil
 	}
+	if id == 102 {
+		// Tag meaning "Not Found"
+		return core.Registration{}, berrors.NotFoundError("Dave's not here man")
+	}
 
 	keyJSON := []byte(test1KeyPublicJSON)
-	var parsedKey jose.JsonWebKey
+	var parsedKey jose.JSONWebKey
 	err := parsedKey.UnmarshalJSON(keyJSON)
 	if err != nil {
 		return core.Registration{}, err
 	}
 
-	return core.Registration{
+	contacts := []string{"mailto:person@mail.com"}
+	goodReg := core.Registration{
 		ID:        id,
 		Key:       &parsedKey,
 		Agreement: agreementURL,
-		InitialIP: net.ParseIP("5.6.7.8"),
-		CreatedAt: time.Date(2003, 9, 27, 0, 0, 0, 0, time.UTC),
+		Contact:   &contacts,
 		Status:    core.StatusValid,
-	}, nil
+	}
+
+	// Return a populated registration with contacts for ID == 1 or ID == 5
+	if id == 1 || id == 5 {
+		return goodReg, nil
+	}
+
+	var test2KeyPublic jose.JSONWebKey
+	_ = test2KeyPublic.UnmarshalJSON([]byte(test2KeyPublicJSON))
+	if id == 2 {
+		goodReg.Key = &test2KeyPublic
+		return goodReg, nil
+	}
+
+	var test3KeyPublic jose.JSONWebKey
+	_ = test3KeyPublic.UnmarshalJSON([]byte(test3KeyPublicJSON))
+	// deactivated registration
+	if id == 3 {
+		goodReg.Key = &test3KeyPublic
+		goodReg.Status = core.StatusDeactivated
+		return goodReg, nil
+	}
+
+	var test4KeyPublic jose.JSONWebKey
+	_ = test4KeyPublic.UnmarshalJSON([]byte(test4KeyPublicJSON))
+	if id == 4 {
+		goodReg.Key = &test4KeyPublic
+		return goodReg, nil
+	}
+
+	// ID 6 == an account without the agreement set
+	if id == 6 {
+		goodReg.Agreement = ""
+		return goodReg, nil
+	}
+
+	goodReg.InitialIP = net.ParseIP("5.6.7.8")
+	goodReg.CreatedAt = time.Date(2003, 9, 27, 0, 0, 0, 0, time.UTC)
+	return goodReg, nil
 }
 
 // GetRegistrationByKey is a mock
-func (sa *StorageAuthority) GetRegistrationByKey(_ context.Context, jwk *jose.JsonWebKey) (core.Registration, error) {
-	var test1KeyPublic jose.JsonWebKey
-	var test2KeyPublic jose.JsonWebKey
-	var test3KeyPublic jose.JsonWebKey
-	var test4KeyPublic jose.JsonWebKey
-	var testE1KeyPublic jose.JsonWebKey
-	var testE2KeyPublic jose.JsonWebKey
+func (sa *StorageAuthority) GetRegistrationByKey(_ context.Context, jwk *jose.JSONWebKey) (core.Registration, error) {
+	var test1KeyPublic jose.JSONWebKey
+	var test2KeyPublic jose.JSONWebKey
+	var test3KeyPublic jose.JSONWebKey
+	var test4KeyPublic jose.JSONWebKey
+	var testE1KeyPublic jose.JSONWebKey
+	var testE2KeyPublic jose.JSONWebKey
 	var err error
 	err = test1KeyPublic.UnmarshalJSON([]byte(test1KeyPublicJSON))
 	if err != nil {
@@ -124,6 +163,16 @@ func (sa *StorageAuthority) GetRegistrationByKey(_ context.Context, jwk *jose.Js
 	if err != nil {
 		return core.Registration{}, err
 	}
+	newKeyBytes, err := ioutil.ReadFile("../test/test-key-5.der")
+	if err != nil {
+		return core.Registration{}, err
+	}
+	newKeyPriv, err := x509.ParsePKCS1PrivateKey(newKeyBytes)
+	if err != nil {
+		return core.Registration{}, err
+	}
+	test5KeyPublic := jose.JSONWebKey{Key: newKeyPriv.Public()}
+
 	err = testE1KeyPublic.UnmarshalJSON([]byte(testE1KeyPublicJSON))
 	if err != nil {
 		panic(err)
@@ -155,6 +204,11 @@ func (sa *StorageAuthority) GetRegistrationByKey(_ context.Context, jwk *jose.Js
 		return core.Registration{ID: 5}, berrors.NotFoundError("reg not found")
 	}
 
+	if core.KeyDigestEquals(jwk, test5KeyPublic) {
+		// No key found
+		return core.Registration{ID: 5}, berrors.NotFoundError("reg not found")
+	}
+
 	if core.KeyDigestEquals(jwk, testE1KeyPublic) {
 		return core.Registration{ID: 3, Key: jwk, Agreement: agreementURL}, nil
 	}
@@ -175,7 +229,7 @@ func (sa *StorageAuthority) GetRegistrationByKey(_ context.Context, jwk *jose.Js
 	}
 
 	// Return a fake registration. Make sure to fill the key field to avoid marshaling errors.
-	return core.Registration{ID: 1, Key: &test1KeyPublic, Agreement: agreementURL}, nil
+	return core.Registration{ID: 1, Key: &test1KeyPublic, Agreement: agreementURL, Status: core.StatusValid}, nil
 }
 
 // GetAuthorization is a mock
@@ -207,7 +261,7 @@ func (sa *StorageAuthority) GetAuthorization(_ context.Context, id string) (core
 		return core.Authorization{}, fmt.Errorf("Unspecified database error")
 	}
 
-	return core.Authorization{}, sql.ErrNoRows
+	return core.Authorization{}, berrors.NotFoundError("no authorization found with id %q", id)
 }
 
 // RevokeAuthorizationsByDomain is a mock
@@ -269,8 +323,8 @@ func (sa *StorageAuthority) MarkCertificateRevoked(_ context.Context, serial str
 }
 
 // NewPendingAuthorization is a mock
-func (sa *StorageAuthority) NewPendingAuthorization(_ context.Context, authz core.Authorization) (output core.Authorization, err error) {
-	return
+func (sa *StorageAuthority) NewPendingAuthorization(_ context.Context, authz core.Authorization) (core.Authorization, error) {
+	return authz, nil
 }
 
 // NewRegistration is a mock
@@ -311,6 +365,20 @@ func (sa *StorageAuthority) FQDNSetExists(_ context.Context, names []string) (bo
 	return false, nil
 }
 
+func (sa *StorageAuthority) PreviousCertificateExists(
+	_ context.Context,
+	_ *sapb.PreviousCertificateExistsRequest,
+) (*sapb.Exists, error) {
+	f := false
+	return &sapb.Exists{
+		Exists: &f,
+	}, nil
+}
+
+func (sa *StorageAuthority) GetPendingAuthorization(ctx context.Context, req *sapb.GetPendingAuthorizationRequest) (*core.Authorization, error) {
+	return nil, fmt.Errorf("GetPendingAuthorization not implemented")
+}
+
 // GetValidAuthorizations is a mock
 func (sa *StorageAuthority) GetValidAuthorizations(_ context.Context, regID int64, names []string, now time.Time) (map[string]*core.Authorization, error) {
 	if regID == 1 {
@@ -326,13 +394,20 @@ func (sa *StorageAuthority) GetValidAuthorizations(_ context.Context, regID int6
 						Type:  "dns",
 						Value: name,
 					},
+					Challenges: []core.Challenge{
+						{
+							Status: core.StatusValid,
+							ID:     23,
+							Type:   core.ChallengeTypeDNS01,
+						},
+					},
 				}
 			}
 		}
 		return auths, nil
 	} else if regID == 2 {
 		return map[string]*core.Authorization{}, nil
-	} else if regID == 5 {
+	} else if regID == 5 || regID == 4 {
 		return map[string]*core.Authorization{"bad.example.com": nil}, nil
 	}
 	return nil, nil
@@ -344,7 +419,12 @@ func (sa *StorageAuthority) CountCertificatesRange(_ context.Context, _, _ time.
 }
 
 // CountCertificatesByNames is a mock
-func (sa *StorageAuthority) CountCertificatesByNames(_ context.Context, _ []string, _, _ time.Time) (ret map[string]int, err error) {
+func (sa *StorageAuthority) CountCertificatesByNames(_ context.Context, _ []string, _, _ time.Time) (ret []*sapb.CountByNames_MapElement, err error) {
+	return
+}
+
+// CountCertificatesByExactNames is a mock
+func (sa *StorageAuthority) CountCertificatesByExactNames(_ context.Context, _ []string, _, _ time.Time) (ret []*sapb.CountByNames_MapElement, err error) {
 	return
 }
 
@@ -353,8 +433,18 @@ func (sa *StorageAuthority) CountRegistrationsByIP(_ context.Context, _ net.IP, 
 	return 0, nil
 }
 
+// CountRegistrationsByIPRange is a mock
+func (sa *StorageAuthority) CountRegistrationsByIPRange(_ context.Context, _ net.IP, _, _ time.Time) (int, error) {
+	return 0, nil
+}
+
 // CountPendingAuthorizations is a mock
 func (sa *StorageAuthority) CountPendingAuthorizations(_ context.Context, _ int64) (int, error) {
+	return 0, nil
+}
+
+// CountPendingOrders is a mock
+func (sa *StorageAuthority) CountPendingOrders(_ context.Context, _ int64) (int, error) {
 	return 0, nil
 }
 
@@ -366,6 +456,95 @@ func (sa *StorageAuthority) DeactivateAuthorization(_ context.Context, _ string)
 // DeactivateRegistration is a mock
 func (sa *StorageAuthority) DeactivateRegistration(_ context.Context, _ int64) error {
 	return nil
+}
+
+// NewOrder is a mock
+func (sa *StorageAuthority) NewOrder(_ context.Context, order *corepb.Order) (*corepb.Order, error) {
+	return order, nil
+}
+
+// SetOrderProcessing is a mock
+func (sa *StorageAuthority) SetOrderProcessing(_ context.Context, order *corepb.Order) error {
+	return nil
+}
+
+// FinalizeOrder is a mock
+func (sa *StorageAuthority) FinalizeOrder(_ context.Context, order *corepb.Order) error {
+	return nil
+}
+
+// GetOrder is a mock
+func (sa *StorageAuthority) GetOrder(_ context.Context, req *sapb.OrderRequest) (*corepb.Order, error) {
+	if *req.Id == 2 {
+		return nil, berrors.NotFoundError("bad")
+	} else if *req.Id == 3 {
+		return nil, errors.New("very bad")
+	}
+
+	status := string(core.StatusValid)
+	one := int64(1)
+	serial := "serial"
+	exp := sa.clk.Now().AddDate(30, 0, 0).Unix()
+	validOrder := &corepb.Order{
+		Id:                req.Id,
+		RegistrationID:    &one,
+		Expires:           &exp,
+		Names:             []string{"example.com"},
+		Status:            &status,
+		Authorizations:    []string{"hello"},
+		CertificateSerial: &serial,
+		Error:             []byte("error"),
+	}
+
+	// Order ID doesn't have a certificate serial yet
+	if *req.Id == 4 {
+		pending := string(core.StatusPending)
+		validOrder.Status = &pending
+		validOrder.Id = req.Id
+		validOrder.CertificateSerial = nil
+		validOrder.Error = nil
+		return validOrder, nil
+	}
+
+	// Order ID 6 belongs to reg ID 6
+	if *req.Id == 6 {
+		six := int64(6)
+		validOrder.Id = req.Id
+		validOrder.RegistrationID = &six
+	}
+
+	// Order ID 7 is expired
+	if *req.Id == 7 {
+		pending := string(core.StatusPending)
+		validOrder.Status = &pending
+		exp = sa.clk.Now().AddDate(-30, 0, 0).Unix()
+		validOrder.Expires = &exp
+	}
+
+	return validOrder, nil
+}
+
+func (sa *StorageAuthority) GetOrderForNames(_ context.Context, _ *sapb.GetOrderForNamesRequest) (*corepb.Order, error) {
+	return nil, nil
+}
+
+func (sa *StorageAuthority) GetOrderAuthorizations(_ context.Context, req *sapb.GetOrderAuthorizationsRequest) (map[string]*core.Authorization, error) {
+	return nil, nil
+}
+
+// GetAuthorizations is a mock
+func (sa *StorageAuthority) GetAuthorizations(ctx context.Context, req *sapb.GetAuthorizationsRequest) (*sapb.Authorizations, error) {
+	return &sapb.Authorizations{}, nil
+}
+
+// CountInvalidAuthorizations is a mock
+func (sa *StorageAuthority) CountInvalidAuthorizations(ctx context.Context, req *sapb.CountInvalidAuthorizationsRequest) (count *sapb.Count, err error) {
+	return &sapb.Count{}, nil
+}
+
+// AddPendingAuthorizations is a mock
+func (sa *StorageAuthority) AddPendingAuthorizations(ctx context.Context, req *sapb.AddPendingAuthorizationsRequest) (*sapb.AuthorizationIDs, error) {
+	return &sapb.AuthorizationIDs{}, nil
 }
 
 // Publisher is a mock
@@ -381,44 +560,6 @@ func (*Publisher) SubmitToCT(_ context.Context, der []byte) error {
 // SubmitToSingleCT is a mock
 func (*Publisher) SubmitToSingleCT(_ context.Context, _, _ string, _ []byte) error {
 	return nil
-}
-
-// Statter is a stat counter that is a no-op except for locally handling Inc
-// calls (which are most of what we use).
-type Statter struct {
-	statsd.NoopClient
-	Counters            map[string]int64
-	TimingDurationCalls []TimingDuration
-}
-
-// TimingDuration records a statsd call to TimingDuration.
-type TimingDuration struct {
-	Metric   string
-	Duration time.Duration
-	Rate     float32
-}
-
-// Inc increments the indicated metric by the indicated value, in the Counters
-// map maintained by the statter
-func (s *Statter) Inc(metric string, value int64, rate float32) error {
-	s.Counters[metric] += value
-	return nil
-}
-
-// TimingDuration stores the parameters in the LastTimingDuration field of the
-// MockStatter.
-func (s *Statter) TimingDuration(metric string, delta time.Duration, rate float32) error {
-	s.TimingDurationCalls = append(s.TimingDurationCalls, TimingDuration{
-		Metric:   metric,
-		Duration: delta,
-		Rate:     rate,
-	})
-	return nil
-}
-
-// NewStatter returns an empty statter with all counters zero
-func NewStatter() *Statter {
-	return &Statter{statsd.NoopClient{}, map[string]int64{}, nil}
 }
 
 // Mailer is a mock
@@ -460,40 +601,46 @@ func (m *Mailer) Connect() error {
 	return nil
 }
 
-// GPDNSHandler mocks the Google Public DNS API
-func GPDNSHandler(w http.ResponseWriter, r *http.Request) {
-	switch r.URL.Query().Get("name") {
-	case "test-domain", "bad-local-resolver.com":
-		resp := core.GPDNSResponse{
-			Status: dns.RcodeSuccess,
-			Answer: []core.GPDNSAnswer{
-				{Name: r.URL.Query().Get("name"), Type: 257, TTL: 10, Data: "0 issue \"ca.com\""},
+// mockSAWithFailedChallenges is a mocks.StorageAuthority that has
+// a `GetAuthorization` implementation that can return authorizations with
+// failed challenges.
+type SAWithFailedChallenges struct {
+	StorageAuthority
+	Clk clock.FakeClock
+}
+
+func (sa *SAWithFailedChallenges) GetAuthorization(_ context.Context, id string) (core.Authorization, error) {
+	authz := core.Authorization{
+		ID:             "valid",
+		Status:         core.StatusValid,
+		RegistrationID: 1,
+		Identifier:     core.AcmeIdentifier{Type: "dns", Value: "not-an-example.com"},
+		Challenges: []core.Challenge{
+			{
+				ID:   23,
+				Type: "dns",
 			},
-		}
-		data, err := json.Marshal(resp)
-		if err != nil {
-			return
-		}
-		w.Write(data)
-	case "break":
-		w.WriteHeader(400)
-	case "break-rcode":
-		data, err := json.Marshal(core.GPDNSResponse{Status: dns.RcodeServerFailure})
-		if err != nil {
-			return
-		}
-		w.Write(data)
-	case "break-dns-quorum":
-		resp := core.GPDNSResponse{
-			Status: dns.RcodeSuccess,
-			Answer: []core.GPDNSAnswer{
-				{Name: r.URL.Query().Get("name"), Type: 257, TTL: 10, Data: strconv.Itoa(mrand.Int())},
-			},
-		}
-		data, err := json.Marshal(resp)
-		if err != nil {
-			return
-		}
-		w.Write(data)
+		},
 	}
+	prob := &probs.ProblemDetails{
+		Type:       "things:are:whack",
+		Detail:     "whack attack",
+		HTTPStatus: 555,
+	}
+	exp := sa.Clk.Now().AddDate(100, 0, 0)
+	authz.Expires = &exp
+	// "oldNS" returns an authz with a failed challenge that has the problem type
+	// statically prefixed by the V1ErrorNS
+	if id == "oldNS" {
+		prob.Type = probs.V1ErrorNS + prob.Type
+		authz.Challenges[0].Error = prob
+		return authz, nil
+	}
+	// "failed" returns an authz with a failed challenge that has no error
+	// namespace on the problem type.
+	if id == "failed" {
+		authz.Challenges[0].Error = prob
+		return authz, nil
+	}
+	return core.Authorization{}, berrors.NotFoundError("no authorization found with id %q", id)
 }

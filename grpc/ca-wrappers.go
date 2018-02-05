@@ -7,7 +7,6 @@
 package grpc
 
 import (
-	"crypto/x509"
 	"errors"
 	"time"
 
@@ -34,14 +33,29 @@ func NewCertificateAuthorityClient(inner caPB.CertificateAuthorityClient, innerO
 	return &CertificateAuthorityClientWrapper{inner, innerOCSP}
 }
 
-func (cac CertificateAuthorityClientWrapper) IssueCertificate(ctx context.Context, csr x509.CertificateRequest, regID int64) (core.Certificate, error) {
+func (cac CertificateAuthorityClientWrapper) IssueCertificate(ctx context.Context, issueReq *caPB.IssueCertificateRequest) (core.Certificate, error) {
 	if cac.inner == nil {
 		return core.Certificate{}, errors.New("this CA client does not support issuing certificates")
 	}
-	res, err := cac.inner.IssueCertificate(ctx, &caPB.IssueCertificateRequest{
-		Csr:            csr.Raw,
-		RegistrationID: &regID,
-	})
+	res, err := cac.inner.IssueCertificate(ctx, issueReq)
+	if err != nil {
+		return core.Certificate{}, err
+	}
+	return pbToCert(res), nil
+}
+
+func (cac CertificateAuthorityClientWrapper) IssuePrecertificate(ctx context.Context, issueReq *caPB.IssueCertificateRequest) (*caPB.IssuePrecertificateResponse, error) {
+	if cac.inner == nil {
+		return nil, errors.New("this CA client does not support issuing precertificates")
+	}
+	return cac.inner.IssuePrecertificate(ctx, issueReq)
+}
+
+func (cac CertificateAuthorityClientWrapper) IssueCertificateForPrecertificate(ctx context.Context, req *caPB.IssueCertificateForPrecertificateRequest) (core.Certificate, error) {
+	if cac.inner == nil {
+		return core.Certificate{}, errors.New("this CA client does not support issuing precertificates")
+	}
+	res, err := cac.inner.IssueCertificateForPrecertificate(ctx, req)
 	if err != nil {
 		return core.Certificate{}, err
 	}
@@ -76,11 +90,19 @@ func NewCertificateAuthorityServer(inner core.CertificateAuthority) *Certificate
 }
 
 func (cas *CertificateAuthorityServerWrapper) IssueCertificate(ctx context.Context, request *caPB.IssueCertificateRequest) (*corepb.Certificate, error) {
-	csr, err := x509.ParseCertificateRequest(request.Csr)
+	cert, err := cas.inner.IssueCertificate(ctx, request)
 	if err != nil {
 		return nil, err
 	}
-	cert, err := cas.inner.IssueCertificate(ctx, *csr, *request.RegistrationID)
+	return certToPB(cert), nil
+}
+
+func (cas *CertificateAuthorityServerWrapper) IssuePrecertificate(ctx context.Context, request *caPB.IssueCertificateRequest) (*caPB.IssuePrecertificateResponse, error) {
+	return cas.inner.IssuePrecertificate(ctx, request)
+}
+
+func (cas *CertificateAuthorityServerWrapper) IssueCertificateForPrecertificate(ctx context.Context, req *caPB.IssueCertificateForPrecertificateRequest) (*corepb.Certificate, error) {
+	cert, err := cas.inner.IssueCertificateForPrecertificate(ctx, req)
 	if err != nil {
 		return nil, err
 	}

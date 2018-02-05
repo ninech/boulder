@@ -8,6 +8,7 @@ import json
 import os
 import random
 import re
+import requests
 import shutil
 import subprocess
 import signal
@@ -21,6 +22,9 @@ import startservers
 import chisel
 from chisel import auth_and_issue
 
+import requests
+import OpenSSL
+
 class ProcInfo:
     """
         Args:
@@ -31,6 +35,17 @@ class ProcInfo:
     def __init__(self, cmd, proc):
         self.cmd = cmd
         self.proc = proc
+
+old_authzs = []
+
+def setup_seventy_days_ago():
+    """Do any setup that needs to happen 70 days in the past, for tests that
+       will run in the 'present'.
+    """
+    # Issue a certificate with the clock set back, and save the authzs to check
+    # later that they are expired (404).
+    global old_authzs
+    _, old_authzs = auth_and_issue([random_domain()])
 
 def fetch_ocsp(request_bytes, url):
     """Fetch an OCSP response using POST, GET, and GET with URL encoding.
@@ -128,6 +143,35 @@ def test_multidomain():
 def test_dns_challenge():
     auth_and_issue([random_domain(), random_domain()], chall_type="dns-01")
 
+def test_issuer():
+    """
+    Issue a certificate, fetch its chain, and verify the chain and
+    certificate against test/test-root.pem. Note: This test only handles chains
+    of length exactly 1.
+    """
+    certr, authzs = auth_and_issue([random_domain()])
+    cert = urllib2.urlopen(certr.uri).read()
+    # The chain URI uses HTTPS when UseAIAIssuerURL is set, so include the root
+    # certificate for the WFE's PKI. Note: We use the requests library here so
+    # we honor the REQUESTS_CA_BUNDLE passed by test.sh.
+    chain = requests.get(certr.cert_chain_uri).content
+    parsed_chain = OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_ASN1, chain)
+    parsed_cert = OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_ASN1, cert)
+    parsed_root = OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_PEM,
+        open("test/test-root.pem").read())
+
+    store = OpenSSL.crypto.X509Store()
+    store.add_cert(parsed_root)
+
+    # Check the chain certificate before adding it to the store.
+    store_ctx = OpenSSL.crypto.X509StoreContext(store, parsed_chain)
+    store_ctx.verify_certificate()
+    store.add_cert(parsed_chain)
+
+    # Now check the end-entity certificate.
+    store_ctx = OpenSSL.crypto.X509StoreContext(store, parsed_cert)
+    store_ctx.verify_certificate()
+
 def test_gsb_lookups():
     """Attempt issuances for a GSB-blocked domain, and expect it to fail. Also
        check the gsb-test-srv's count of received queries to ensure it got a
@@ -146,7 +190,7 @@ def test_gsb_lookups():
     # The GSB test server tracks hits with a trailing / on the URL
     hits = hits_map.get(hostname + "/", 0)
     if hits != 1:
-        raise("Expected %d Google Safe Browsing lookups for %s, found %d" % (1, url, actual))
+        raise Exception("Expected %d Google Safe Browsing lookups for %s, found %d" % (1, url, actual))
 
 def test_ocsp():
     cert_file_pem = os.path.join(tempdir, "cert.pem")
@@ -169,7 +213,7 @@ def test_ct_submission():
     url_a = "http://boulder:4500/submissions"
     url_b = "http://boulder:4501/submissions"
     submissions_a = urllib2.urlopen(url_a).read()
-    submissions_b = urllib2.urlopen(url_a).read()
+    submissions_b = urllib2.urlopen(url_b).read()
     expected_a_submissions = int(submissions_a)+1
     expected_b_submissions = int(submissions_b)+1
     auth_and_issue([random_domain()])
@@ -183,9 +227,6 @@ def test_ct_submission():
     if (int(submissions_a) < expected_a_submissions or
         int(submissions_a) > 2 * expected_a_submissions):
         raise Exception("Expected %d CT submissions to boulder:4500, found %s" % (expected_a_submissions, submissions_a))
-    # Only test when ResubmitMissingSCTsOnly is enabled
-    if not default_config_dir.startswith("test/config-next"):
-        return
     for _ in range(0, 10):
         submissions_a = urllib2.urlopen(url_a).read()
         submissions_b = urllib2.urlopen(url_b).read()
@@ -205,9 +246,9 @@ def random_domain():
 
 def test_expiration_mailer():
     email_addr = "integration.%x@boulder.local" % random.randrange(2**16)
-    cert = auth_and_issue([random_domain()], email=email_addr).body
+    cert, _ = auth_and_issue([random_domain()], email=email_addr)
     # Check that the expiration mailer sends a reminder
-    expiry = datetime.datetime.strptime(cert.get_notAfter(), '%Y%m%d%H%M%SZ')
+    expiry = datetime.datetime.strptime(cert.body.get_notAfter(), '%Y%m%d%H%M%SZ')
     no_reminder = expiry + datetime.timedelta(days=-31)
     first_reminder = expiry + datetime.timedelta(days=-13)
     last_reminder = expiry + datetime.timedelta(days=-2)
@@ -222,12 +263,12 @@ def test_expiration_mailer():
     resp = urllib2.urlopen("http://localhost:9381/count?to=%s" % email_addr)
     mailcount = int(resp.read())
     if mailcount != 2:
-        raise("\nExpiry mailer failed: expected 2 emails, got %d" % mailcount)
+        raise Exception("\nExpiry mailer failed: expected 2 emails, got %d" % mailcount)
 
 def test_revoke_by_account():
     cert_file_pem = os.path.join(tempdir, "revokeme.pem")
     client = chisel.make_client()
-    cert = auth_and_issue([random_domain()], client=client).body
+    cert, _ = auth_and_issue([random_domain()], client=client)
     client.revoke(cert.body)
 
     wait_for_ocsp_revoked(cert_file_pem, "test/test-ca2.pem", ee_ocsp_url)
@@ -237,8 +278,26 @@ def test_caa():
     """Request issuance for two CAA domains, one where we are permitted and one where we are not."""
     auth_and_issue(["good-caa-reserved.com"])
 
-    chisel.expect_problem("urn:acme:error:connection",
+    chisel.expect_problem("urn:acme:error:caa",
         lambda: auth_and_issue(["bad-caa-reserved.com"]))
+
+def test_account_update():
+    """
+    Create a new ACME client/account with one contact email. Then update the
+    account to a different contact emails.
+    """
+    emails=("initial-email@example.com", "updated-email@example.com", "another-update@example.com")
+    client = chisel.make_client(email=emails[0])
+
+    for email in emails[1:]:
+        result = chisel.update_email(client, email=email)
+        # We expect one contact in the result
+        if len(result.body.contact) != 1:
+            raise Exception("\nUpdate account failed: expected one contact in result, got 0")
+        # We expect it to be the email we just updated to
+        actual = result.body.contact[0]
+        if actual != "mailto:"+email:
+            raise Exception("\nUpdate account failed: expected contact %s, got %s" % (email, actual))
 
 def run(cmd, **kwargs):
     return subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT, **kwargs)
@@ -277,12 +336,15 @@ def test_single_ocsp():
     p.send_signal(signal.SIGTERM)
     p.wait()
 
+def fakeclock(date):
+    return date.strftime("%a %b %d %H:%M:%S UTC %Y")
+
 def get_future_output(cmd, date):
-    return run(cmd, env={'FAKECLOCK': date.strftime("%a %b %d %H:%M:%S UTC %Y")})
+    return run(cmd, env={'FAKECLOCK': fakeclock(date)})
 
 def test_expired_authz_purger():
     def expect(target_time, num, table):
-        out = get_future_output("./bin/expired-authz-purger --config cmd/expired-authz-purger/config.json --yes", target_time)
+        out = get_future_output("./bin/expired-authz-purger --config cmd/expired-authz-purger/config.json", target_time)
         if 'via FAKECLOCK' not in out:
             raise Exception("expired-authz-purger was not built with `integration` build tag")
         if num is None:
@@ -311,9 +373,48 @@ def test_expired_authz_purger():
     expect(now, 0, "authz")
     expect(after_grace_period, 1, "authz")
 
+def test_renewal_exemption():
+    """
+    Under a single domain, issue one certificate, then two renewals of that
+    certificate, then one more different certificate (with a different
+    subdomain). Since the certificatesPerName rate limit in testing is 2 per 90
+    days, and the renewals should be discounted under the renewal exemption,
+    each of these issuances should succeed. Then do one last issuance that we
+    expect to be rate limited, just to check that the rate limit is actually 2,
+    and we are testing what we think we are testing. See
+    https://letsencrypt.org/docs/rate-limits/ for more details.
+    """
+
+    # TODO(@cpu): Once the `AllowRenewalFirstRL` feature flag is enabled by
+    # default, delete this early return.
+    if not default_config_dir.startswith("test/config-next"):
+        return
+
+    base_domain = random_domain()
+    # First issuance
+    auth_and_issue(["www." + base_domain])
+    # First Renewal
+    auth_and_issue(["www." + base_domain])
+    # Second Renewal
+    auth_and_issue(["www." + base_domain])
+    # Issuance of a different cert
+    auth_and_issue(["blog." + base_domain])
+    # Final, failed issuance, for another different cert
+    chisel.expect_problem("urn:acme:error:rateLimited",
+        lambda: auth_and_issue(["mail." + base_domain]))
+
 def test_certificates_per_name():
     chisel.expect_problem("urn:acme:error:rateLimited",
         lambda: auth_and_issue(["lim.it"]))
+
+def test_expired_authzs_404():
+    if len(old_authzs) == 0:
+        raise Exception("Old authzs not prepared for test_expired_authzs_404")
+    for a in old_authzs:
+        response = requests.get(a.uri)
+        if response.status_code != 404:
+            raise Exception("Unexpected response for expired authz: ",
+                response.status_code)
 
 default_config_dir = os.environ.get('BOULDER_CONFIG_DIR', '')
 if default_config_dir == '':
@@ -321,8 +422,8 @@ if default_config_dir == '':
 
 def test_admin_revoker_cert():
     cert_file_pem = os.path.join(tempdir, "ar-cert.pem")
-    cert = auth_and_issue([random_domain()], cert_output=cert_file_pem).body
-    serial = "%x" % cert.get_serial_number()
+    cert, _ = auth_and_issue([random_domain()], cert_output=cert_file_pem)
+    serial = "%x" % cert.body.get_serial_number()
     # Revoke certificate by serial
     run("./bin/admin-revoker serial-revoke --config %s/admin-revoker.json %s %d" % (
         default_config_dir, serial, 1))
@@ -345,6 +446,20 @@ def test_admin_revoker_authz():
     if data['status'] != "revoked":
         raise Exception("Authorization wasn't revoked")
 
+def test_stats():
+    def expect_stat(port, stat):
+        url = "http://localhost:%d/metrics" % port
+        response = requests.get(url)
+        if not stat in response.content:
+            print(response.content)
+            raise Exception("%s not present in %s" % (stat, url))
+    expect_stat(8000, "\nresponse_time_count{")
+    expect_stat(8000, "\ngo_goroutines ")
+    expect_stat(8000, '\ngrpc_client_handling_seconds_count{grpc_method="NewRegistration",grpc_service="ra.RegistrationAuthority",grpc_type="unary"} ')
+    expect_stat(8002, '\ngrpc_server_handling_seconds_sum{grpc_method="UpdateAuthorization",grpc_service="ra.RegistrationAuthority",grpc_type="unary"} ')
+    expect_stat(8002, '\ngrpc_client_handling_seconds_count{grpc_method="UpdatePendingAuthorization",grpc_service="sa.StorageAuthority",grpc_type="unary"} ')
+    expect_stat(8001, "\ngo_goroutines ")
+
 exit_status = 1
 tempdir = tempfile.mkdtemp()
 
@@ -365,23 +480,21 @@ def main():
     if not (args.run_all or args.run_certbot or args.run_chisel or args.custom is not None):
         raise Exception("must run at least one of the letsencrypt or chisel tests with --all, --certbot, --chisel, or --custom")
 
-    # Keep track of whether we started the Boulder servers and need to shut them down.
-    started_servers = False
-    # Check if WFE is already running.
-    try:
-        urllib2.urlopen("http://localhost:4000/directory")
-    except urllib2.URLError:
-        # WFE not running, start all of Boulder.
-        started_servers = True
-        if not startservers.start(race_detection=True):
-            raise Exception("startservers failed")
+    now = datetime.datetime.utcnow()
+    seventy_days_ago = now+datetime.timedelta(days=-70)
+    if not startservers.start(race_detection=True, fakeclock=fakeclock(seventy_days_ago)):
+        raise Exception("startservers failed (mocking seventy days ago)")
+    setup_seventy_days_ago()
+    startservers.stop()
+
+    if not startservers.start(race_detection=True):
+        raise Exception("startservers failed")
 
     if args.run_all or args.run_chisel:
         run_chisel()
 
-    # Simulate a disconnection from RabbitMQ to make sure reconnects work.
-    if started_servers:
-        startservers.bounce_forward()
+    # Simulate a disconnection to make sure gRPC reconnects work.
+    startservers.bounce_forward()
 
     if args.run_all or args.run_certbot:
         run_client_tests()
@@ -389,7 +502,7 @@ def main():
     if args.custom:
         run(args.custom)
 
-    if started_servers and not startservers.check():
+    if not startservers.check():
         raise Exception("startservers.check failed")
 
     global exit_status
@@ -398,6 +511,7 @@ def main():
 def run_chisel():
     # TODO(https://github.com/letsencrypt/boulder/issues/2521): Add TLS-SNI test.
 
+    test_issuer()
     test_expired_authz_purger()
     test_ct_submission()
     test_gsb_lookups()
@@ -410,6 +524,10 @@ def run_chisel():
     test_ocsp()
     test_single_ocsp()
     test_dns_challenge()
+    test_renewal_exemption()
+    test_expired_authzs_404()
+    test_account_update()
+    test_stats()
 
 if __name__ == "__main__":
     try:

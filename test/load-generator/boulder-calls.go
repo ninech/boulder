@@ -21,7 +21,7 @@ import (
 
 	"github.com/letsencrypt/boulder/core"
 
-	"gopkg.in/square/go-jose.v1"
+	"gopkg.in/square/go-jose.v2"
 )
 
 var (
@@ -52,12 +52,20 @@ func newRegistration(s *State, ctx *context) error {
 	if err != nil {
 		return err
 	}
-	signer, err := jose.NewSigner(jose.ES256, signKey)
+	ns := &nonceSource{s: s}
+	ctx.ns = ns
+	signer, err := jose.NewSigner(
+		jose.SigningKey{
+			Key:       signKey,
+			Algorithm: jose.ES256,
+		},
+		&jose.SignerOptions{
+			NonceSource: ns,
+			EmbedJWK:    true,
+		})
 	if err != nil {
 		return err
 	}
-	ctx.ns = &nonceSource{s: s}
-	signer.SetNonceSource(ctx.ns)
 
 	// create the registration object
 	var regStr []byte
@@ -218,13 +226,14 @@ func solveHTTPOne(s *State, ctx *context) error {
 		return errors.New("no http-01 challenges to complete")
 	}
 
-	jwk := &jose.JsonWebKey{Key: &ctx.reg.key.PublicKey}
+	jwk := &jose.JSONWebKey{Key: &ctx.reg.key.PublicKey}
 	thumbprint, err := jwk.Thumbprint(crypto.SHA256)
 	if err != nil {
 		return err
 	}
 	authStr := fmt.Sprintf("%s.%s", chall.Token, base64.RawURLEncoding.EncodeToString(thumbprint))
 	s.challSrv.addHTTPOneChallenge(chall.Token, authStr)
+	defer s.challSrv.deleteHTTPOneChallenge(chall.Token)
 
 	update := fmt.Sprintf(`{"resource":"challenge","keyAuthorization":"%s"}`, authStr)
 	requestPayload, err := s.signWithNonce(challengePath, false, []byte(update), ctx.reg.signer)
@@ -303,7 +312,7 @@ func solveTLSOne(s *State, ctx *context) error {
 		return errors.New("no http-01 challenges to complete")
 	}
 
-	jwk := &jose.JsonWebKey{Key: &ctx.reg.key.PublicKey}
+	jwk := &jose.JSONWebKey{Key: &ctx.reg.key.PublicKey}
 	thumbprint, err := jwk.Thumbprint(crypto.SHA256)
 	if err != nil {
 		return err

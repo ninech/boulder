@@ -20,15 +20,13 @@
     "saService": {
       "serverAddresses": ["sa.boulder:19095"],
       "timeout": "15s"
-    }
-  },
-
-  "statsd": {
-    "server": "localhost:8125",
-    "prefix": "Boulder"
+    },
+    "SMTPTrustedRootFile": "test/mail-test-srv/minica.pem",
+    "frequency": "1h"
   },
 
   "syslog": {
-    "stdoutlevel": 6
+    "stdoutlevel": 6,
+    "sysloglevel": 4
   }
 }

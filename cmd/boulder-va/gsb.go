@@ -3,15 +3,16 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
+	"time"
 
 	safebrowsingv4 "github.com/google/safebrowsing"
 	"github.com/letsencrypt/boulder/cmd"
 	blog "github.com/letsencrypt/boulder/log"
 	"github.com/letsencrypt/boulder/va"
-	safebrowsing "github.com/letsencrypt/go-safe-browsing-api"
 )
 
 const (
@@ -70,8 +71,8 @@ type gsbAdapter struct {
 // IsListed provides the va.SafeBrowsing interface by using the
 // `safebrowsing4v.SafeBrowser` to look up one URL and return the first threat
 // list it is found on, or "" if the URL is safe.
-func (sb gsbAdapter) IsListed(url string) (string, error) {
-	threats, err := sb.LookupURLs([]string{url})
+func (sb gsbAdapter) IsListed(ctx context.Context, url string) (string, error) {
+	threats, err := sb.LookupURLsContext(ctx, []string{url})
 	if err != nil {
 		return "error", err
 	}
@@ -119,22 +120,11 @@ func newGoogleSafeBrowsingV4(gsb *cmd.GoogleSafeBrowsingConfig, logger blog.Logg
 	if err != nil {
 		return nil, err
 	}
-	return gsbAdapter{sb}, nil
-}
-
-// newGoogleSafeBrowsing constructs a va.SafeBrowsing instance using the legacy
-// letsencrypt fork of the go-safebrowsing-api client.
-func newGoogleSafeBrowsing(gsb *cmd.GoogleSafeBrowsingConfig) (va.SafeBrowsing, error) {
-	// If there is no GSB configuration, don't create a client
-	if gsb == nil {
-		return nil, nil
-	}
-	if err := configCheck(gsb); err != nil {
-		return nil, err
-	}
-	sbc, err := safebrowsing.NewSafeBrowsing(gsb.APIKey, gsb.DataDir)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
+	defer cancel() // avoid leak
+	err = sb.WaitUntilReady(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return sbc, nil
+	return gsbAdapter{sb}, nil
 }

@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc/codes"
-	"gopkg.in/square/go-jose.v1"
+	"gopkg.in/square/go-jose.v2"
 
 	"github.com/letsencrypt/boulder/core"
 	corepb "github.com/letsencrypt/boulder/core/proto"
@@ -42,13 +42,13 @@ func pbToAuthzMeta(in *vapb.AuthzMeta) (core.Authorization, error) {
 	}, nil
 }
 
-func jwkToString(jwk *jose.JsonWebKey) (string, error) {
+func jwkToString(jwk *jose.JSONWebKey) (string, error) {
 	bytes, err := jwk.MarshalJSON()
 	return string(bytes), err
 }
 
-func stringToJWK(in string) (*jose.JsonWebKey, error) {
-	var jwk = new(jose.JsonWebKey)
+func stringToJWK(in string) (*jose.JSONWebKey, error) {
+	var jwk = new(jose.JSONWebKey)
 	err := jwk.UnmarshalJSON([]byte(in))
 	if err != nil {
 		return nil, err
@@ -88,7 +88,7 @@ func pbToProblemDetails(in *corepb.ProblemDetails) (*probs.ProblemDetails, error
 	return prob, nil
 }
 
-func challengeToPB(challenge core.Challenge) (*corepb.Challenge, error) {
+func ChallengeToPB(challenge core.Challenge) (*corepb.Challenge, error) {
 	st := string(challenge.Status)
 	prob, err := problemDetailsToPB(challenge.Error)
 	if err != nil {
@@ -146,9 +146,13 @@ func pbToChallenge(in *corepb.Challenge) (challenge core.Challenge, err error) {
 
 func validationRecordToPB(record core.ValidationRecord) (*corepb.ValidationRecord, error) {
 	addrs := make([][]byte, len(record.AddressesResolved))
+	addrsTried := make([][]byte, len(record.AddressesTried))
 	var err error
 	for i, v := range record.AddressesResolved {
 		addrs[i] = []byte(v)
+	}
+	for i, v := range record.AddressesTried {
+		addrsTried[i] = []byte(v)
 	}
 	addrUsed, err := record.AddressUsed.MarshalText()
 	if err != nil {
@@ -161,6 +165,7 @@ func validationRecordToPB(record core.ValidationRecord) (*corepb.ValidationRecor
 		AddressUsed:       addrUsed,
 		Authorities:       record.Authorities,
 		Url:               &record.URL,
+		AddressesTried:    addrsTried,
 	}, nil
 }
 
@@ -175,6 +180,10 @@ func pbToValidationRecord(in *corepb.ValidationRecord) (record core.ValidationRe
 	for i, v := range in.AddressesResolved {
 		addrs[i] = net.IP(v)
 	}
+	addrsTried := make([]net.IP, len(in.AddressesTried))
+	for i, v := range in.AddressesTried {
+		addrsTried[i] = net.IP(v)
+	}
 	var addrUsed net.IP
 	err = addrUsed.UnmarshalText(in.AddressUsed)
 	if err != nil {
@@ -187,6 +196,7 @@ func pbToValidationRecord(in *corepb.ValidationRecord) (record core.ValidationRe
 		AddressUsed:       addrUsed,
 		Authorities:       in.Authorities,
 		URL:               *in.Url,
+		AddressesTried:    addrsTried,
 	}, nil
 }
 
@@ -251,7 +261,7 @@ func performValidationReqToArgs(in *vapb.PerformValidationRequest) (domain strin
 }
 
 func argsToPerformValidationRequest(domain string, challenge core.Challenge, authz core.Authorization) (*vapb.PerformValidationRequest, error) {
-	pbChall, err := challengeToPB(challenge)
+	pbChall, err := ChallengeToPB(challenge)
 	if err != nil {
 		return nil, err
 	}
@@ -299,7 +309,7 @@ func registrationToPB(reg core.Registration) (*corepb.Registration, error) {
 }
 
 func pbToRegistration(pb *corepb.Registration) (core.Registration, error) {
-	var key jose.JsonWebKey
+	var key jose.JSONWebKey
 	err := key.UnmarshalJSON(pb.Key)
 	if err != nil {
 		return core.Registration{}, err
@@ -334,10 +344,10 @@ func pbToRegistration(pb *corepb.Registration) (core.Registration, error) {
 	}, nil
 }
 
-func authzToPB(authz core.Authorization) (*corepb.Authorization, error) {
+func AuthzToPB(authz core.Authorization) (*corepb.Authorization, error) {
 	challs := make([]*corepb.Challenge, len(authz.Challenges))
 	for i, c := range authz.Challenges {
-		pbChall, err := challengeToPB(c)
+		pbChall, err := ChallengeToPB(c)
 		if err != nil {
 			return nil, err
 		}
@@ -363,7 +373,7 @@ func authzToPB(authz core.Authorization) (*corepb.Authorization, error) {
 	}, nil
 }
 
-func pbToAuthz(pb *corepb.Authorization) (core.Authorization, error) {
+func PBToAuthz(pb *corepb.Authorization) (core.Authorization, error) {
 	challs := make([]core.Challenge, len(pb.Challenges))
 	for i, c := range pb.Challenges {
 		chall, err := pbToChallenge(c)
@@ -378,19 +388,39 @@ func pbToAuthz(pb *corepb.Authorization) (core.Authorization, error) {
 		return core.Authorization{}, err
 	}
 	expires := time.Unix(0, *pb.Expires)
-	return core.Authorization{
-		ID:             *pb.Id,
+	authz := core.Authorization{
 		Identifier:     core.AcmeIdentifier{Type: core.IdentifierDNS, Value: *pb.Identifier},
 		RegistrationID: *pb.RegistrationID,
 		Status:         core.AcmeStatus(*pb.Status),
 		Expires:        &expires,
 		Challenges:     challs,
 		Combinations:   combos,
-	}, nil
+	}
+	if pb.Id != nil {
+		authz.ID = *pb.Id
+	}
+	return authz, nil
 }
 
 func registrationValid(reg *corepb.Registration) bool {
 	return !(reg.Id == nil || reg.Key == nil || reg.Agreement == nil || reg.InitialIP == nil || reg.CreatedAt == nil || reg.Status == nil || reg.ContactsPresent == nil)
+}
+
+// orderValid checks that a corepb.Order is valid. In addition to the checks
+// from `newOrderValid` it ensures the order ID and the BeganProcessing fields
+// are not nil.
+func orderValid(order *corepb.Order) bool {
+	return order.Id != nil && order.BeganProcessing != nil && newOrderValid(order)
+}
+
+// newOrderValid checks that a corepb.Order is valid. It allows for a nil
+// `order.Id` because the order has not been assigned an ID yet when it is being
+// created initially. It allows `order.BeganProcessing` to be nil because
+// `sa.NewOrder` explicitly sets it to the default value. It also allows
+// `order.CertificateSerial` to be nil such that it can be used in places where
+// the order has not been finalized yet.
+func newOrderValid(order *corepb.Order) bool {
+	return !(order.RegistrationID == nil || order.Expires == nil || order.Authorizations == nil || order.Names == nil)
 }
 
 func authorizationValid(authz *corepb.Authorization) bool {

@@ -6,7 +6,6 @@ import (
 
 	"github.com/golang/mock/gomock"
 	"github.com/jmhodges/clock"
-	safebrowsing "github.com/letsencrypt/go-safe-browsing-api"
 
 	"github.com/letsencrypt/boulder/cmd"
 	blog "github.com/letsencrypt/boulder/log"
@@ -26,15 +25,15 @@ func TestIsSafeDomain(t *testing.T) {
 	defer ctrl.Finish()
 
 	sbc := NewMockSafeBrowsing(ctrl)
-	sbc.EXPECT().IsListed("good.com").Return("", nil)
-	sbc.EXPECT().IsListed("bad.com").Return("bad", nil)
-	sbc.EXPECT().IsListed("errorful.com").Return("", errors.New("welp"))
-	sbc.EXPECT().IsListed("outofdate.com").Return("", safebrowsing.ErrOutOfDateHashes)
+	sbc.EXPECT().IsListed(gomock.Any(), "good.com").Return("", nil)
+	sbc.EXPECT().IsListed(gomock.Any(), "bad.com").Return("bad", nil)
+	sbc.EXPECT().IsListed(gomock.Any(), "errorful.com").Return("", errors.New("welp"))
 	va := NewValidationAuthorityImpl(
 		&cmd.PortConfig{},
 		sbc,
 		nil,
 		nil,
+		0,
 		"user agent 1.0",
 		"letsencrypt.org",
 		stats,
@@ -59,22 +58,15 @@ func TestIsSafeDomain(t *testing.T) {
 		t.Errorf("bad.com: want false, got %t", resp.GetIsSafe())
 	}
 
+	// If there is an error looking up a domain (e.g. because of a GSB outage),
+	// then we expect the VA to allow the authz to be created without error.
 	domain = "errorful.com"
 	resp, err = va.IsSafeDomain(ctx, &vaPB.IsSafeDomainRequest{Domain: &domain})
-	if err == nil {
-		t.Errorf("errorful.com: want error, got none")
-	}
-	if resp != nil {
-		t.Errorf("errorful.com: want resp == nil, got %v", resp)
-	}
-
-	domain = "outofdate.com"
-	resp, err = va.IsSafeDomain(ctx, &vaPB.IsSafeDomainRequest{Domain: &domain})
 	if err != nil {
-		t.Errorf("outofdate.com: want no error, got '%s'", err)
+		t.Errorf("errorful.com: want no error, got %v", resp)
 	}
 	if !resp.GetIsSafe() {
-		t.Errorf("outofdate.com: IsSafeDomain should fail open on out of date hashes")
+		t.Errorf("errorful.com: want true, got %t", resp.GetIsSafe())
 	}
 }
 
@@ -85,6 +77,7 @@ func TestAllowNilInIsSafeDomain(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		0,
 		"user agent 1.0",
 		"letsencrypt.org",
 		stats,

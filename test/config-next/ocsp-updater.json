@@ -33,15 +33,7 @@
     "ocspGeneratorService": {
       "serverAddresses": ["ca.boulder:19096"],
       "timeout": "15s"
-    },
-    "features": {
-      "ResubmitMissingSCTsOnly": true
     }
-  },
-
-  "statsd": {
-    "server": "localhost:8125",
-    "prefix": "Boulder"
   },
 
   "syslog": {
@@ -50,7 +42,7 @@
   },
 
   "common": {
-    "issuerCert": "test/test-ca.pem",
+    "issuerCert": "test/test-ca2.pem",
     "ct": {
       "logs": [
         {

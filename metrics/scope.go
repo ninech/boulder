@@ -1,117 +1,127 @@
-//go:generate mockgen -package metrics -destination ./mock_statsd.go github.com/cactus/go-statsd-client/statsd Statter
-
 package metrics
 
 import (
 	"strings"
 	"time"
 
-	"github.com/cactus/go-statsd-client/statsd"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // Scope is a stats collector that will prefix the name the stats it
 // collects.
 type Scope interface {
 	NewScope(scopes ...string) Scope
-	Scope() string
 
-	Inc(stat string, value int64) error
-	Dec(stat string, value int64) error
-	Gauge(stat string, value int64) error
-	GaugeDelta(stat string, value int64) error
-	Timing(stat string, delta int64) error
-	TimingDuration(stat string, delta time.Duration) error
-	Set(stat string, value string) error
-	SetInt(stat string, value int64) error
-	Raw(stat string, value string) error
+	Inc(stat string, value int64)
+	Gauge(stat string, value int64)
+	GaugeDelta(stat string, value int64)
+	Timing(stat string, delta int64)
+	TimingDuration(stat string, delta time.Duration)
+	SetInt(stat string, value int64)
+
+	MustRegister(...prometheus.Collector)
 }
 
-// StatsdScope is a Scope that sends data to statsd with a prefix added to the
-// stat names.
-type StatsdScope struct {
-	prefix  string
-	statter statsd.Statter
+// promScope is a Scope that sends data to Prometheus
+type promScope struct {
+	*autoRegisterer
+	prefix     []string
+	registerer prometheus.Registerer
 }
 
-var _ Scope = &StatsdScope{}
+var _ Scope = &promScope{}
 
-// NewStatsdScope returns a StatsdScope that prefixes stats it collections with
-// the scopes given joined together by periods
-func NewStatsdScope(statter statsd.Statter, scopes ...string) *StatsdScope {
-	return &StatsdScope{
-		prefix:  strings.Join(scopes, ".") + ".",
-		statter: statter,
+// NewPromScope returns a Scope that sends data to Prometheus
+func NewPromScope(registerer prometheus.Registerer, scopes ...string) Scope {
+	return &promScope{
+		prefix:         scopes,
+		autoRegisterer: newAutoRegisterer(registerer),
+		registerer:     registerer,
 	}
 }
 
-// NewNoopScope returns a Scope that won't collect anything
-func NewNoopScope() Scope {
-	c, _ := statsd.NewNoopClient()
-	return NewStatsdScope(c, "noop")
+func (s *promScope) MustRegister(collectors ...prometheus.Collector) {
+	s.registerer.MustRegister(collectors...)
 }
 
 // NewScope generates a new Scope prefixed by this Scope's prefix plus the
 // prefixes given joined by periods
-func (s *StatsdScope) NewScope(scopes ...string) Scope {
-	scope := strings.Join(scopes, ".")
-	return NewStatsdScope(s.statter, s.prefix+scope)
-}
-
-// Scope returns the current string prefix (except for the final period) that
-// stats will receive
-func (s *StatsdScope) Scope() string {
-	return s.prefix[:len(s.prefix)-1]
+func (s *promScope) NewScope(scopes ...string) Scope {
+	return &promScope{
+		prefix:         append(s.prefix, scopes...),
+		autoRegisterer: s.autoRegisterer,
+		registerer:     s.registerer,
+	}
 }
 
 // Inc increments the given stat and adds the Scope's prefix to the name
-func (s *StatsdScope) Inc(stat string, value int64) error {
-	autoCounter(s.prefix + stat).Add(float64(1))
-	return s.statter.Inc(s.prefix+stat, value, 1.0)
-}
-
-// Dec decrements the given stat and adds the Scope's prefix to the name
-func (s *StatsdScope) Dec(stat string, value int64) error {
-	return s.statter.Dec(s.prefix+stat, value, 1.0)
+func (s *promScope) Inc(stat string, value int64) {
+	s.autoCounter(s.statName(stat)).Add(float64(value))
 }
 
 // Gauge sends a gauge stat and adds the Scope's prefix to the name
-func (s *StatsdScope) Gauge(stat string, value int64) error {
-	autoGauge(s.prefix + stat).Set(float64(value))
-	return s.statter.Gauge(s.prefix+stat, value, 1.0)
+func (s *promScope) Gauge(stat string, value int64) {
+	s.autoGauge(s.statName(stat)).Set(float64(value))
 }
 
 // GaugeDelta sends the change in a gauge stat and adds the Scope's prefix to the name
-func (s *StatsdScope) GaugeDelta(stat string, value int64) error {
-	autoGauge(s.prefix + stat).Add(float64(value))
-	return s.statter.GaugeDelta(s.prefix+stat, value, 1.0)
+func (s *promScope) GaugeDelta(stat string, value int64) {
+	s.autoGauge(s.statName(stat)).Add(float64(value))
 }
 
 // Timing sends a latency stat and adds the Scope's prefix to the name
-func (s *StatsdScope) Timing(stat string, delta int64) error {
-	autoSummary(s.prefix + stat + "_seconds").Observe(float64(delta))
-	return s.statter.Timing(s.prefix+stat, delta, 1.0)
+func (s *promScope) Timing(stat string, delta int64) {
+	s.autoSummary(s.statName(stat) + "_seconds").Observe(float64(delta))
 }
 
 // TimingDuration sends a latency stat as a time.Duration and adds the Scope's
 // prefix to the name
-func (s *StatsdScope) TimingDuration(stat string, delta time.Duration) error {
-	autoSummary(s.prefix + stat + "_seconds").Observe(delta.Seconds())
-	return s.statter.TimingDuration(s.prefix+stat, delta, 1.0)
-}
-
-// Set sets a stat's new value and adds the Scope's prefix to the name
-func (s *StatsdScope) Set(stat string, value string) error {
-	return s.statter.Set(s.prefix+stat, value, 1.0)
+func (s *promScope) TimingDuration(stat string, delta time.Duration) {
+	s.autoSummary(s.statName(stat) + "_seconds").Observe(delta.Seconds())
 }
 
 // SetInt sets a stat's integer value and adds the Scope's prefix to the name
-func (s *StatsdScope) SetInt(stat string, value int64) error {
-	autoGauge(s.prefix + stat).Set(float64(value))
-	return s.statter.SetInt(s.prefix+stat, value, 1.0)
+func (s *promScope) SetInt(stat string, value int64) {
+	s.autoGauge(s.statName(stat)).Set(float64(value))
 }
 
-// Raw sends a stat value without interpretation and adds the Scope's prefix to
-// the name
-func (s *StatsdScope) Raw(stat string, value string) error {
-	return s.statter.Raw(s.prefix+stat, value, 1.0)
+// statName construct a name for a stat based on the prefix of this scope, plus
+// the provided string.
+func (s *promScope) statName(stat string) string {
+	if len(s.prefix) > 0 {
+		return strings.Join(s.prefix, "_") + "_" + stat
+	}
+	return stat
+}
+
+type noopScope struct{}
+
+// NewNoopScope returns a Scope that won't collect anything
+func NewNoopScope() Scope {
+	return noopScope{}
+}
+
+func (n noopScope) NewScope(scopes ...string) Scope {
+	return n
+}
+
+func (n noopScope) Inc(stat string, value int64) {
+}
+
+func (n noopScope) Gauge(stat string, value int64) {
+}
+
+func (n noopScope) GaugeDelta(stat string, value int64) {
+}
+
+func (n noopScope) Timing(stat string, delta int64) {
+}
+
+func (n noopScope) TimingDuration(stat string, delta time.Duration) {
+}
+
+func (n noopScope) SetInt(stat string, value int64) {
+}
+
+func (n noopScope) MustRegister(...prometheus.Collector) {
 }

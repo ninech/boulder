@@ -6,13 +6,7 @@
     "listenAddress": "0.0.0.0:4002",
     "maxAge": "10s",
     "shutdownStopTimeout": "10s",
-    "shutdownKillTimeout": "1m",
     "debugAddr": ":8005"
-  },
-
-  "statsd": {
-    "server": "localhost:8125",
-    "prefix": "Boulder"
   },
 
   "syslog": {
@@ -21,6 +15,6 @@
  },
 
   "common": {
-    "issuerCert": "test/test-ca.pem"
+    "issuerCert": "test/test-ca2.pem"
   }
 }

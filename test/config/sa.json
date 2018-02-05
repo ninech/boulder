@@ -3,6 +3,7 @@
     "dbConnectFile": "test/secrets/sa_dburl",
     "maxDBConns": 10,
     "maxConcurrentRPCServerRequests": 100000,
+    "ParallelismPerRPC": 20,
     "debugAddr": ":8003",
     "tls": {
       "caCertFile": "test/grpc-creds/minica.pem",
@@ -22,15 +23,14 @@
         "sa.boulder",
         "wfe.boulder"
       ]
+    },
+    "features": {
+      "EnforceChallengeDisable": true
     }
   },
 
-  "statsd": {
-    "server": "localhost:8125",
-    "prefix": "Boulder"
-  },
-
   "syslog": {
-    "stdoutlevel": 6
+    "stdoutlevel": 6,
+    "sysloglevel": 4
   }
 }

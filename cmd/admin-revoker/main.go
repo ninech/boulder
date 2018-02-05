@@ -27,8 +27,6 @@ import (
 	sapb "github.com/letsencrypt/boulder/sa/proto"
 )
 
-const clientName = "AdminRevoker"
-
 const usageString = `
 usage:
 admin-revoker serial-revoke --config <path> <serial> <reason-code>
@@ -59,14 +57,11 @@ type config struct {
 		Features map[string]bool
 	}
 
-	Statsd cmd.StatsdConfig
-
 	Syslog cmd.SyslogConfig
 }
 
-func setupContext(c config) (core.RegistrationAuthority, blog.Logger, *gorp.DbMap, core.StorageAuthority, metrics.Scope) {
-	stats, logger := cmd.StatsAndLogging(c.Statsd, c.Syslog)
-	scope := metrics.NewStatsdScope(stats, "AdminRevoker")
+func setupContext(c config) (core.RegistrationAuthority, blog.Logger, *gorp.DbMap, core.StorageAuthority) {
+	logger := cmd.NewLogger(c.Syslog)
 
 	var tls *tls.Config
 	var err error
@@ -75,7 +70,8 @@ func setupContext(c config) (core.RegistrationAuthority, blog.Logger, *gorp.DbMa
 		cmd.FailOnError(err, "TLS config")
 	}
 
-	raConn, err := bgrpc.ClientSetup(c.Revoker.RAService, tls, scope)
+	clientMetrics := bgrpc.NewClientMetrics(metrics.NewNoopScope())
+	raConn, err := bgrpc.ClientSetup(c.Revoker.RAService, tls, clientMetrics)
 	cmd.FailOnError(err, "Failed to load credentials and create gRPC connection to RA")
 	rac := bgrpc.NewRegistrationAuthorityClient(rapb.NewRegistrationAuthorityClient(raConn))
 
@@ -83,13 +79,12 @@ func setupContext(c config) (core.RegistrationAuthority, blog.Logger, *gorp.DbMa
 	cmd.FailOnError(err, "Couldn't load DB URL")
 	dbMap, err := sa.NewDbMap(dbURL, c.Revoker.DBConfig.MaxDBConns)
 	cmd.FailOnError(err, "Couldn't setup database connection")
-	go sa.ReportDbConnCount(dbMap, scope)
 
-	saConn, err := bgrpc.ClientSetup(c.Revoker.SAService, tls, scope)
+	saConn, err := bgrpc.ClientSetup(c.Revoker.SAService, tls, clientMetrics)
 	cmd.FailOnError(err, "Failed to load credentials and create gRPC connection to SA")
 	sac := bgrpc.NewStorageAuthorityClient(sapb.NewStorageAuthorityClient(saConn))
 
-	return rac, logger, dbMap, sac, scope
+	return rac, logger, dbMap, sac
 }
 
 func revokeBySerial(ctx context.Context, serial string, reasonCode revocation.Reason, rac core.RegistrationAuthority, logger blog.Logger, tx *gorp.Transaction) (err error) {
@@ -177,7 +172,7 @@ func main() {
 		reasonCode, err := strconv.Atoi(args[1])
 		cmd.FailOnError(err, "Reason code argument must be an integer")
 
-		rac, logger, dbMap, _, _ := setupContext(c)
+		rac, logger, dbMap, _ := setupContext(c)
 
 		tx, err := dbMap.Begin()
 		if err != nil {
@@ -199,7 +194,7 @@ func main() {
 		reasonCode, err := strconv.Atoi(args[1])
 		cmd.FailOnError(err, "Reason code argument must be an integer")
 
-		rac, logger, dbMap, sac, _ := setupContext(c)
+		rac, logger, dbMap, sac := setupContext(c)
 		defer logger.AuditPanic()
 
 		tx, err := dbMap.Begin()
@@ -233,7 +228,7 @@ func main() {
 
 	case command == "auth-revoke" && len(args) == 1:
 		domain := args[0]
-		_, logger, _, sac, stats := setupContext(c)
+		_, logger, _, sac := setupContext(c)
 		ident := core.AcmeIdentifier{Value: domain, Type: core.IdentifierDNS}
 		authsRevoked, pendingAuthsRevoked, err := sac.RevokeAuthorizationsByDomain(ctx, ident)
 		cmd.FailOnError(err, fmt.Sprintf("Failed to revoke authorizations for %s", ident.Value))
@@ -242,8 +237,6 @@ func main() {
 			pendingAuthsRevoked,
 			authsRevoked,
 		))
-		stats.Inc("RevokedAuthorizations", authsRevoked)
-		stats.Inc("RevokedPendingAuthorizations", pendingAuthsRevoked)
 
 	default:
 		usage()

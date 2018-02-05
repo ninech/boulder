@@ -39,6 +39,10 @@ GRANT INSERT ON ocspResponses TO 'sa'@'localhost';
 GRANT SELECT,INSERT,UPDATE ON registrations TO 'sa'@'localhost';
 GRANT SELECT,INSERT,UPDATE ON challenges TO 'sa'@'localhost';
 GRANT SELECT,INSERT on fqdnSets TO 'sa'@'localhost';
+GRANT SELECT,INSERT,UPDATE ON orders TO 'sa'@'localhost';
+GRANT SELECT,INSERT ON orderToAuthz TO 'sa'@'localhost';
+GRANT SELECT,INSERT ON requestedNames TO 'sa'@'localhost';
+GRANT SELECT,INSERT,DELETE ON orderFqdnSets TO 'sa'@'localhost';
 
 -- OCSP Responder
 GRANT SELECT ON certificateStatus TO 'ocsp_resp'@'localhost';
@@ -53,10 +57,6 @@ GRANT SELECT ON sctReceipts TO 'ocsp_update'@'localhost';
 -- Revoker Tool
 GRANT SELECT ON registrations TO 'revoker'@'localhost';
 GRANT SELECT ON certificates TO 'revoker'@'localhost';
-
--- External Cert Importer
-GRANT SELECT,INSERT,UPDATE,DELETE ON identifierData TO 'importer'@'localhost';
-GRANT SELECT,INSERT,UPDATE,DELETE ON externalCerts TO 'importer'@'localhost';
 
 -- Expiration mailer
 GRANT SELECT ON certificates TO 'mailer'@'localhost';

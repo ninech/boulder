@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log"
@@ -14,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/letsencrypt/boulder/cmd"
 	blog "github.com/letsencrypt/boulder/log"
 )
 
@@ -195,10 +197,19 @@ func (srv *mailSrv) serveSMTP(l net.Listener) error {
 func main() {
 	var listenAPI = flag.String("http", "0.0.0.0:9381", "http port to listen on")
 	var listenSMTP = flag.String("smtp", "0.0.0.0:9380", "smtp port to listen on")
+	var certFilename = flag.String("cert", "", "certificate to serve")
+	var privKeyFilename = flag.String("key", "", "private key for certificate")
 	var closeFirst = flag.Uint("closeFirst", 0, "close first n connections after MAIL for reconnection tests")
 
 	flag.Parse()
-	l, err := net.Listen("tcp", *listenSMTP)
+
+	cert, err := tls.LoadX509KeyPair(*certFilename, *privKeyFilename)
+	if err != nil {
+		log.Fatal(err)
+	}
+	l, err := tls.Listen("tcp", *listenSMTP, &tls.Config{
+		Certificates: []tls.Certificate{cert},
+	})
 	if err != nil {
 		log.Fatalln("Couldn't bind %q for SMTP", *listenSMTP, err)
 	}
@@ -215,6 +226,8 @@ func main() {
 			log.Fatalln("Couldn't start HTTP server", err)
 		}
 	}()
+
+	go cmd.CatchSignals(nil, nil)
 
 	err = srv.serveSMTP(l)
 	if err != nil {

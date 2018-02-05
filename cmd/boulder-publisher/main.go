@@ -5,30 +5,24 @@ import (
 	"flag"
 	"os"
 
-	ct "github.com/google/certificate-transparency/go"
+	ct "github.com/google/certificate-transparency-go"
 	"google.golang.org/grpc"
 
 	"github.com/letsencrypt/boulder/cmd"
 	"github.com/letsencrypt/boulder/core"
 	"github.com/letsencrypt/boulder/features"
 	bgrpc "github.com/letsencrypt/boulder/grpc"
-	"github.com/letsencrypt/boulder/metrics"
 	"github.com/letsencrypt/boulder/publisher"
 	pubPB "github.com/letsencrypt/boulder/publisher/proto"
 	sapb "github.com/letsencrypt/boulder/sa/proto"
 )
 
-const clientName = "Publisher"
-
 type config struct {
 	Publisher struct {
 		cmd.ServiceConfig
-		SubmissionTimeout cmd.ConfigDuration
-		SAService         *cmd.GRPCClientConfig
-		Features          map[string]bool
+		SAService *cmd.GRPCClientConfig
+		Features  map[string]bool
 	}
-
-	Statsd cmd.StatsdConfig
 
 	Syslog cmd.SyslogConfig
 
@@ -54,10 +48,9 @@ func main() {
 	err = features.Set(c.Publisher.Features)
 	cmd.FailOnError(err, "Failed to set feature flags")
 
-	stats, logger := cmd.StatsAndLogging(c.Statsd, c.Syslog)
-	scope := metrics.NewStatsdScope(stats, "Publisher")
+	scope, logger := cmd.StatsAndLogging(c.Syslog, c.Publisher.DebugAddr)
 	defer logger.AuditPanic()
-	logger.Info(cmd.VersionString(clientName))
+	logger.Info(cmd.VersionString())
 
 	logs := make([]*publisher.Log, len(c.Common.CT.Logs))
 	for i, ld := range c.Common.CT.Logs {
@@ -73,7 +66,7 @@ func main() {
 	cmd.FailOnError(err, "Failed to load CT submission bundle")
 	bundle := []ct.ASN1Cert{}
 	for _, cert := range pemBundle {
-		bundle = append(bundle, ct.ASN1Cert(cert.Raw))
+		bundle = append(bundle, ct.ASN1Cert{Data: cert.Raw})
 	}
 
 	var tls *tls.Config
@@ -82,26 +75,27 @@ func main() {
 		cmd.FailOnError(err, "TLS config")
 	}
 
-	conn, err := bgrpc.ClientSetup(c.Publisher.SAService, tls, scope)
+	clientMetrics := bgrpc.NewClientMetrics(scope)
+	conn, err := bgrpc.ClientSetup(c.Publisher.SAService, tls, clientMetrics)
 	cmd.FailOnError(err, "Failed to load credentials and create gRPC connection to SA")
 	sac := bgrpc.NewStorageAuthorityClient(sapb.NewStorageAuthorityClient(conn))
 
 	pubi := publisher.New(
 		bundle,
 		logs,
-		c.Publisher.SubmissionTimeout.Duration,
 		logger,
 		scope,
 		sac)
 
 	var grpcSrv *grpc.Server
 	if c.Publisher.GRPC != nil {
-		s, l, err := bgrpc.NewServer(c.Publisher.GRPC, tls, scope)
+		serverMetrics := bgrpc.NewServerMetrics(scope)
+		s, l, err := bgrpc.NewServer(c.Publisher.GRPC, tls, serverMetrics)
 		cmd.FailOnError(err, "Unable to setup Publisher gRPC server")
 		gw := bgrpc.NewPublisherServerWrapper(pubi)
 		pubPB.RegisterPublisherServer(s, gw)
 		go func() {
-			err = s.Serve(l)
+			err = cmd.FilterShutdownErrors(s.Serve(l))
 			cmd.FailOnError(err, "Publisher gRPC service failed")
 		}()
 		grpcSrv = s
@@ -112,9 +106,6 @@ func main() {
 			grpcSrv.GracefulStop()
 		}
 	})
-
-	go cmd.DebugServer(c.Publisher.DebugAddr)
-	go cmd.ProfileCmd(scope)
 
 	select {}
 }

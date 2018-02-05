@@ -11,12 +11,12 @@ import (
 	"golang.org/x/net/context"
 )
 
-// MockDNSResolver is a mock
-type MockDNSResolver struct {
+// MockDNSClient is a mock
+type MockDNSClient struct {
 }
 
 // LookupTXT is a mock
-func (mock *MockDNSResolver) LookupTXT(_ context.Context, hostname string) ([]string, []string, error) {
+func (mock *MockDNSClient) LookupTXT(_ context.Context, hostname string) ([]string, []string, error) {
 	if hostname == "_acme-challenge.servfail.com" {
 		return nil, nil, fmt.Errorf("SERVFAIL")
 	}
@@ -25,6 +25,15 @@ func (mock *MockDNSResolver) LookupTXT(_ context.Context, hostname string) ([]st
 		//               + "." + "9jg46WB3rR_AHD-EBXdN7cBkH1WOu0tA3M9fm21mqTI"))
 		// expected token + test account jwk thumbprint
 		return []string{"LPsIwTo7o8BoG0-vjCyGQGBWSVIPxI-i_X336eUOQZo"}, []string{"respect my authority!"}, nil
+	}
+	if hostname == "_acme-challenge.wrong-dns01.com" {
+		return []string{"a"}, []string{"respect my authority!"}, nil
+	}
+	if hostname == "_acme-challenge.wrong-many-dns01.com" {
+		return []string{"a", "b", "c", "d", "e"}, []string{"respect my authority!"}, nil
+	}
+	if hostname == "_acme-challenge.long-dns01.com" {
+		return []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, []string{"respect my authority!"}, nil
 	}
 	if hostname == "_acme-challenge.no-authority-dns01.com" {
 		// base64(sha256("LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0"
@@ -59,7 +68,7 @@ func (t timeoutError) Timeout() bool {
 //
 // Note: see comments on LookupMX regarding email.only
 //
-func (mock *MockDNSResolver) LookupHost(_ context.Context, hostname string) ([]net.IP, error) {
+func (mock *MockDNSClient) LookupHost(_ context.Context, hostname string) ([]net.IP, error) {
 	if hostname == "always.invalid" ||
 		hostname == "invalid.invalid" ||
 		hostname == "email.only" {
@@ -73,70 +82,25 @@ func (mock *MockDNSResolver) LookupHost(_ context.Context, hostname string) ([]n
 			Err: errors.New("some net error"),
 		}, -1}
 	}
+	// dual-homed host with an IPv6 and an IPv4 address
+	if hostname == "ipv4.and.ipv6.localhost" {
+		return []net.IP{
+			net.ParseIP("::1"),
+			net.ParseIP("127.0.0.1"),
+		}, nil
+	}
+	if hostname == "ipv6.localhost" {
+		return []net.IP{
+			net.ParseIP("::1"),
+		}, nil
+	}
 	ip := net.ParseIP("127.0.0.1")
 	return []net.IP{ip}, nil
 }
 
 // LookupCAA returns mock records for use in tests.
-func (mock *MockDNSResolver) LookupCAA(_ context.Context, domain string) ([]*dns.CAA, error) {
-	var results []*dns.CAA
-	var record dns.CAA
-	switch strings.TrimRight(domain, ".") {
-	case "caa-timeout.com":
-		return nil, &DNSError{dns.TypeCAA, "always.timeout", MockTimeoutError(), -1}
-	case "reserved.com":
-		record.Tag = "issue"
-		record.Value = "ca.com"
-		results = append(results, &record)
-	case "critical.com":
-		record.Flag = 1
-		record.Tag = "issue"
-		record.Value = "ca.com"
-		results = append(results, &record)
-	case "present.com", "present.servfail.com":
-		record.Tag = "issue"
-		record.Value = "letsencrypt.org"
-		results = append(results, &record)
-	case "com":
-		// com has no CAA records.
-		return nil, nil
-	case "servfail.com", "servfail.present.com":
-		return results, fmt.Errorf("SERVFAIL")
-	case "multi-crit-present.com":
-		record.Flag = 1
-		record.Tag = "issue"
-		record.Value = "ca.com"
-		results = append(results, &record)
-		secondRecord := record
-		secondRecord.Value = "letsencrypt.org"
-		results = append(results, &secondRecord)
-	case "unknown-critical.com":
-		record.Flag = 128
-		record.Tag = "foo"
-		record.Value = "bar"
-		results = append(results, &record)
-	case "unknown-critical2.com":
-		record.Flag = 1
-		record.Tag = "foo"
-		record.Value = "bar"
-		results = append(results, &record)
-	case "unknown-noncritical.com":
-		record.Flag = 0x7E // all bits we don't treat as meaning "critical"
-		record.Tag = "foo"
-		record.Value = "bar"
-		results = append(results, &record)
-	case "present-with-parameter.com":
-		record.Tag = "issue"
-		record.Value = "  letsencrypt.org  ;foo=bar;baz=bar"
-		results = append(results, &record)
-	case "unsatisfiable.com":
-		record.Tag = "issue"
-		record.Value = ";"
-		results = append(results, &record)
-	case "bad-local-resolver.com":
-		return nil, &DNSError{dns.TypeCAA, domain, MockTimeoutError(), -1}
-	}
-	return results, nil
+func (mock *MockDNSClient) LookupCAA(_ context.Context, domain string) ([]*dns.CAA, error) {
+	return nil, nil
 }
 
 // LookupMX is a mock
@@ -146,7 +110,7 @@ func (mock *MockDNSResolver) LookupCAA(_ context.Context, domain string) ([]*dns
 // all domains except for special cases, so MX-only domains must be
 // handled in both LookupHost and LookupMX.
 //
-func (mock *MockDNSResolver) LookupMX(_ context.Context, domain string) ([]string, error) {
+func (mock *MockDNSClient) LookupMX(_ context.Context, domain string) ([]string, error) {
 	switch strings.TrimRight(domain, ".") {
 	case "letsencrypt.org":
 		fallthrough

@@ -2,8 +2,8 @@
   "wfe": {
     "listenAddress": "0.0.0.0:4000",
     "TLSListenAddress": "0.0.0.0:4430",
-    "serverCertificatePath": "test/wfe.pem",
-    "serverKeyPath": "test/wfe.key",
+    "serverCertificatePath": "test/wfe-tls/boulder/cert.pem",
+    "serverKeyPath": "test/wfe-tls/boulder/key.pem",
     "requestTimeout": "10s",
     "allowOrigins": ["*"],
     "certCacheDuration": "6h",
@@ -11,7 +11,6 @@
     "indexCacheDuration": "24h",
     "issuerCacheDuration": "48h",
     "shutdownStopTimeout": "10s",
-    "shutdownKillTimeout": "1m",
     "subscriberAgreementURL": "http://boulder:4000/terms/v1",
     "acceptRevocationReason": true,
     "allowAuthzDeactivation": true,
@@ -23,22 +22,15 @@
     },
     "raService": {
       "serverAddresses": ["ra.boulder:19094"],
-      "timeout": "15s"
+      "timeout": "20s"
     },
     "saService": {
       "serverAddresses": ["sa.boulder:19095"],
       "timeout": "15s"
     },
     "features": {
-      "AllowAccountDeactivation": true,
-      "AllowKeyRollover": true,
       "UseAIAIssuerURL": true
     }
-  },
-
-  "statsd": {
-    "server": "localhost:8125",
-    "prefix": "Boulder"
   },
 
   "syslog": {
@@ -47,7 +39,6 @@
   },
 
   "common": {
-    "issuerCert": "test/test-ca.pem",
-    "dnsResolver": "127.0.0.1:8053"
+    "issuerCert": "test/test-ca2.pem"
   }
 }

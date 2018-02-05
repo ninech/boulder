@@ -4,6 +4,7 @@
     "rsaProfile": "rsaEE",
     "ecdsaProfile": "ecdsaEE",
     "debugAddr": ":8001",
+    "weakKeyDirectory": "test/example-weak-keys.json",
     "tls": {
       "caCertFile": "test/grpc-creds/minica.pem",
       "certFile": "test/grpc-creds/ca.boulder/cert.pem",
@@ -35,8 +36,9 @@
       "NumSessions": 2
     }],
     "expiry": "2160h",
+    "backdate": "1h",
     "lifespanOCSP": "96h",
-    "maxNames": 1000,
+    "maxNames": 100,
     "doNotForceCN": true,
     "enableMustStaple": true,
     "hostnamePolicyFile": "test/hostname-policy.json",
@@ -129,9 +131,8 @@
     },
     "maxConcurrentRPCServerRequests": 100000,
     "features": {
-        "IDNASupport": true,
-        "AllowTLS02Challenges": true,
-        "GenerateOCSPEarly": true
+        "WildcardDomains": true,
+        "AllowTLS02Challenges": true
     }
   },
 
@@ -143,17 +144,8 @@
     }
   },
 
-  "statsd": {
-    "server": "localhost:8125",
-    "prefix": "Boulder"
-  },
-
   "syslog": {
     "stdoutlevel": 6,
     "sysloglevel": 4
-  },
-
-  "common": {
-    "issuerCert": "test/test-ca.pem"
   }
 }

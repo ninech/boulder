@@ -20,6 +20,11 @@ var enabledChallenges = map[string]bool{
 	core.ChallengeTypeDNS01:    true,
 }
 
+const (
+	testRegID            = 1234
+	testRegIDWhitelisted = 1000
+)
+
 func paImpl(t *testing.T) *AuthorityImpl {
 	pa, err := New(enabledChallenges)
 	if err != nil {
@@ -47,6 +52,8 @@ func TestWillingToIssue(t *testing.T) {
 
 		{`www.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef012345.com`, errNameTooLong}, // Too long (254 characters)
 
+		{`www.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef012345.com`, errNameTooLong}, // Too long (240 characters)
+
 		{`www.abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz.com`, errLabelTooLong}, // Label too long (>63 characters)
 
 		{`www.-ombo.com`, errInvalidDNSCharacter}, // Label starts with '-'
@@ -56,10 +63,10 @@ func TestWillingToIssue(t *testing.T) {
 		{`1`, errTooFewLabels},
 		{`*`, errInvalidDNSCharacter},
 		{`**`, errInvalidDNSCharacter},
-		{`*.*`, errInvalidDNSCharacter},
+		{`*.*`, errWildcardNotSupported},
 		{`zombo*com`, errInvalidDNSCharacter},
-		{`*.com`, errInvalidDNSCharacter},
-		{`*.zombo.com`, errInvalidDNSCharacter},
+		{`*.com`, errWildcardNotSupported},
+		{`*.zombo.com`, errWildcardNotSupported},
 		{`..a`, errLabelTooShort},
 		{`a..a`, errLabelTooShort},
 		{`.a..a`, errLabelTooShort},
@@ -91,6 +98,8 @@ func TestWillingToIssue(t *testing.T) {
 		{`example.internal`, errNonPublic},
 		// All-numeric final label not okay.
 		{`www.zombo.163`, errNonPublic},
+		{`xn--109-3veba6djs1bfxlfmx6c9g.xn--f1awi.xn--p1ai`, errMalformedIDN}, // Not in Unicode NFKC
+		{`bq--abwhky3f6fxq.jakacomo.com`, errInvalidRLDH},
 	}
 
 	shouldBeTLDError := []string{
@@ -158,10 +167,6 @@ func TestWillingToIssue(t *testing.T) {
 		}
 	}
 
-	// Test IDNs
-	err = pa.WillingToIssue(core.AcmeIdentifier{Type: core.IdentifierDNS, Value: "www.xn--mnich-kva.com"})
-	test.AssertError(t, err, "WillingToIssue didn't fail on a IDN with features.IDNASupport disabled")
-	_ = features.Set(map[string]bool{"IDNASupport": true})
 	// Invalid encoding
 	err = pa.WillingToIssue(core.AcmeIdentifier{Type: core.IdentifierDNS, Value: "www.xn--m.com"})
 	test.AssertError(t, err, "WillingToIssue didn't fail on a malformed IDN")
@@ -200,6 +205,105 @@ func TestWillingToIssue(t *testing.T) {
 	}
 }
 
+func TestWillingToIssueWildcard(t *testing.T) {
+	bannedDomains := []string{
+		"zombo.gov.us",
+	}
+	exactBannedDomains := []string{
+		"highvalue.letsdecrypt.org",
+	}
+	pa := paImpl(t)
+
+	bannedBytes, err := json.Marshal(blacklistJSON{
+		Blacklist:      bannedDomains,
+		ExactBlacklist: exactBannedDomains,
+	})
+	test.AssertNotError(t, err, "Couldn't serialize banned list")
+	f, _ := ioutil.TempFile("", "test-wildcard-banlist.txt")
+	defer os.Remove(f.Name())
+	err = ioutil.WriteFile(f.Name(), bannedBytes, 0640)
+	test.AssertNotError(t, err, "Couldn't write serialized banned list to file")
+	err = pa.SetHostnamePolicyFile(f.Name())
+	test.AssertNotError(t, err, "Couldn't load policy contents from file")
+
+	makeDNSIdent := func(domain string) core.AcmeIdentifier {
+		return core.AcmeIdentifier{
+			Type:  core.IdentifierDNS,
+			Value: domain,
+		}
+	}
+
+	testCases := []struct {
+		Name        string
+		Ident       core.AcmeIdentifier
+		ExpectedErr error
+	}{
+		{
+			Name:        "Non-DNS identifier",
+			Ident:       core.AcmeIdentifier{Type: "nickname", Value: "cpu"},
+			ExpectedErr: errInvalidIdentifier,
+		},
+		{
+			Name:        "Too many wildcards",
+			Ident:       makeDNSIdent("ok.*.whatever.*.example.com"),
+			ExpectedErr: errTooManyWildcards,
+		},
+		{
+			Name:        "Misplaced wildcard",
+			Ident:       makeDNSIdent("ok.*.whatever.example.com"),
+			ExpectedErr: errMalformedWildcard,
+		},
+		{
+			Name:        "Missing ICANN TLD",
+			Ident:       makeDNSIdent("*.ok.madeup"),
+			ExpectedErr: errNonPublic,
+		},
+		{
+			Name:        "Wildcard for ICANN TLD",
+			Ident:       makeDNSIdent("*.com"),
+			ExpectedErr: errICANNTLDWildcard,
+		},
+		{
+			Name:        "Forbidden base domain",
+			Ident:       makeDNSIdent("*.zombo.gov.us"),
+			ExpectedErr: errBlacklisted,
+		},
+		// We should not allow getting a wildcard for that would cover an exact
+		// blocklist domain
+		{
+			Name:        "Wildcard for ExactBlacklist base domain",
+			Ident:       makeDNSIdent("*.letsdecrypt.org"),
+			ExpectedErr: errBlacklisted,
+		},
+		// We should allow a wildcard for a domain that doesn't match the exact
+		// blacklist domain
+		{
+			Name:        "Wildcard for non-matching subdomain of ExactBlacklist domain",
+			Ident:       makeDNSIdent("*.lowvalue.letsdecrypt.org"),
+			ExpectedErr: nil,
+		},
+		// We should allow getting a wildcard for an exact blacklist domain since it
+		// only covers subdomains, not the exact name.
+		{
+			Name:        "Wildcard for ExactBlacklist domain",
+			Ident:       makeDNSIdent("*.highvalue.letsdecrypt.org"),
+			ExpectedErr: nil,
+		},
+		{
+			Name:        "Valid wildcard domain",
+			Ident:       makeDNSIdent("*.everything.is.possible.at.zombo.com"),
+			ExpectedErr: nil,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.Name, func(t *testing.T) {
+			result := pa.WillingToIssueWildcard(tc.Ident)
+			test.AssertEquals(t, result, tc.ExpectedErr)
+		})
+	}
+}
+
 var accountKeyJSON = `{
   "kty":"RSA",
   "n":"yNWVhtYEKJR21y9xsHV-PD_bYwbXSeNuFal46xYxVfRL5mqha7vttvjB_vc7Xg2RvgCxHPCqoxgMPTzHrZT75LjCwIW2K_klBYN8oYvTwwmeSkAz6ut7ZxPv-nZaT5TJhGk0NT2kh_zSpdriEJ_3vW-mqxYbbBmpvHqsa1_zx9fSuHYctAZJWzxzUZXykbWMWQZpEiE0J4ajj51fInEzVn7VxV-mzfMyboQjujPh7aNJxAWSq4oQEJJDgWwSh9leyoJoPpONHxh5nEE5AjE01FkGICSxjpZsF-w8hOTI3XXohUdu29Se26k2B0PolDSuj0GIQU6-W9TdLXSjBb2SpQ",
@@ -209,7 +313,8 @@ var accountKeyJSON = `{
 func TestChallengesFor(t *testing.T) {
 	pa := paImpl(t)
 
-	challenges, combinations := pa.ChallengesFor(core.AcmeIdentifier{})
+	challenges, combinations, err := pa.ChallengesFor(core.AcmeIdentifier{}, testRegID, false)
+	test.AssertNotError(t, err, "ChallengesFor failed")
 
 	test.Assert(t, len(challenges) == len(enabledChallenges), "Wrong number of challenges returned")
 	test.Assert(t, len(combinations) == len(enabledChallenges), "Wrong number of combinations returned")
@@ -225,6 +330,75 @@ func TestChallengesFor(t *testing.T) {
 	}
 	test.AssertEquals(t, len(seenChalls), len(enabledChallenges))
 	test.AssertDeepEquals(t, expectedCombos, combinations)
+
+}
+
+func TestChallengesForWhitelist(t *testing.T) {
+	enabledChallenges[core.ChallengeTypeTLSSNI01] = false
+
+	var enabledChallengesWhitelist = map[string][]int64{
+		core.ChallengeTypeHTTP01:   []int64{},
+		core.ChallengeTypeTLSSNI01: []int64{testRegIDWhitelisted},
+		core.ChallengeTypeDNS01:    []int64{},
+	}
+
+	pa := paImpl(t)
+
+	wlBytes, err := json.Marshal(enabledChallengesWhitelist)
+	test.AssertNotError(t, err, "Couldn't serialize whitelist")
+	f, _ := ioutil.TempFile("", "test-challenges-whitelist.json")
+	defer os.Remove(f.Name())
+	err = ioutil.WriteFile(f.Name(), wlBytes, 0640)
+	test.AssertNotError(t, err, "Couldn't write serialized whitelist to file")
+	err = pa.SetChallengesWhitelistFile(f.Name())
+	test.AssertNotError(t, err, "Couldn't load policy contents from file")
+
+	challenges, _, err := pa.ChallengesFor(core.AcmeIdentifier{}, testRegID, false)
+	test.AssertNotError(t, err, "ChallengesFor failed")
+	test.Assert(t, len(challenges) == len(enabledChallenges)-1, "Wrong number of challenges returned")
+
+	challenges, _, err = pa.ChallengesFor(core.AcmeIdentifier{}, testRegIDWhitelisted, false)
+	test.AssertNotError(t, err, "ChallengesFor failed")
+	test.Assert(t, len(challenges) == len(enabledChallenges), "Wrong number of challenges returned")
+}
+
+func TestChallengesForWildcard(t *testing.T) {
+	// wildcardIdent is an identifier for a wildcard domain name
+	wildcardIdent := core.AcmeIdentifier{
+		Type:  core.IdentifierDNS,
+		Value: "*.zombo.com",
+	}
+
+	mustConstructPA := func(t *testing.T, enabledChallenges map[string]bool) *AuthorityImpl {
+		pa, err := New(enabledChallenges)
+		test.AssertNotError(t, err, "Couldn't create policy implementation")
+		return pa
+	}
+
+	// First try to get a challenge for the wildcard ident without the
+	// DNS-01 challenge type enabled. This should produce an error
+	var enabledChallenges = map[string]bool{
+		core.ChallengeTypeHTTP01:   true,
+		core.ChallengeTypeTLSSNI01: true,
+		core.ChallengeTypeDNS01:    false,
+	}
+	pa := mustConstructPA(t, enabledChallenges)
+	_, _, err := pa.ChallengesFor(wildcardIdent, testRegID, false)
+	test.AssertError(t, err, "ChallengesFor did not error for a wildcard ident "+
+		"when DNS-01 was disabled")
+	test.AssertEquals(t, err.Error(), "Challenges requested for wildcard "+
+		"identifier but DNS-01 challenge type is not enabled")
+
+	// Try again with DNS-01 enabled. It should not error and
+	// should return only one DNS-01 type challenge
+	enabledChallenges[core.ChallengeTypeDNS01] = true
+	pa = mustConstructPA(t, enabledChallenges)
+	challenges, combinations, err := pa.ChallengesFor(wildcardIdent, testRegID, false)
+	test.AssertNotError(t, err, "ChallengesFor errored for a wildcard ident "+
+		"unexpectedly")
+	test.AssertEquals(t, len(combinations), 1)
+	test.AssertEquals(t, len(challenges), 1)
+	test.AssertEquals(t, challenges[0].Type, core.ChallengeTypeDNS01)
 }
 
 func TestExtractDomainIANASuffix_Valid(t *testing.T) {
@@ -287,4 +461,38 @@ func TestExtractDomainIANASuffix_Invalid(t *testing.T) {
 			t.Errorf("%q: expected err, got none", tc)
 		}
 	}
+}
+
+// TestMalformedExactBlacklist tests that loading a JSON policy file with an
+// invalid exact blacklist entry will fail as expected.
+func TestMalformedExactBlacklist(t *testing.T) {
+	pa := paImpl(t)
+
+	exactBannedDomains := []string{
+		// Only one label - not valid
+		"com",
+	}
+	bannedDomains := []string{
+		"placeholder.domain.not.important.for.this.test.com",
+	}
+
+	// Create JSON for the exactBannedDomains
+	bannedBytes, err := json.Marshal(blacklistJSON{
+		Blacklist:      bannedDomains,
+		ExactBlacklist: exactBannedDomains,
+	})
+	test.AssertNotError(t, err, "Couldn't serialize banned list")
+
+	// Create a temp file for the JSON contents
+	f, _ := ioutil.TempFile("", "test-invalid-exactblacklist.json")
+	defer os.Remove(f.Name())
+	// Write the JSON to the temp file
+	err = ioutil.WriteFile(f.Name(), bannedBytes, 0640)
+	test.AssertNotError(t, err, "Couldn't write serialized banned list to file")
+
+	// Try to use the JSON tempfile as the hostname policy. It should produce an
+	// error since the exact blacklist contents are malformed.
+	err = pa.SetHostnamePolicyFile(f.Name())
+	test.AssertError(t, err, "Loaded invalid exact blacklist content without error")
+	test.AssertEquals(t, err.Error(), "Malformed exact blacklist entry, only one label: \"com\"")
 }

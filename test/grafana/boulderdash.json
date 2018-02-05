@@ -5,7 +5,7 @@
       "type": "grafana",
       "id": "grafana",
       "name": "Grafana",
-      "version": "4.1.1"
+      "version": "4.5.2"
     },
     {
       "type": "panel",
@@ -27,11 +27,13 @@
   "rows": [
     {
       "collapse": false,
-      "height": "250px",
+      "height": 256,
       "panels": [
         {
           "aliasColors": {},
           "bars": false,
+          "dashLength": 10,
+          "dashes": false,
           "datasource": "$datasource",
           "fill": 1,
           "id": 1,
@@ -53,13 +55,15 @@
           "points": false,
           "renderer": "flot",
           "seriesOverrides": [],
-          "span": 12,
+          "spaceLength": 10,
+          "span": 6,
           "stack": false,
           "steppedLine": false,
           "targets": [
             {
-              "expr": "sum by (job) (rate(response_time_count{code!~\"50.\"}[$interval])) / sum by (job) (rate(response_time_count{}[$interval]))",
+              "expr": "sum by (instance) (rate(response_time_count{code!~\"50.\",instance=~\".*wfe.*\"}[$interval])) / sum by (instance) (rate(response_time_count{}[$interval]))",
               "intervalFactor": 2,
+              "legendFormat": "",
               "metric": "",
               "refId": "A",
               "step": 240
@@ -76,6 +80,7 @@
           },
           "type": "graph",
           "xaxis": {
+            "buckets": null,
             "mode": "time",
             "name": null,
             "show": true,
@@ -88,6 +93,82 @@
               "logBase": 1,
               "max": "1.1",
               "min": "0",
+              "show": true
+            },
+            {
+              "format": "short",
+              "label": null,
+              "logBase": 1,
+              "max": null,
+              "min": null,
+              "show": true
+            }
+          ]
+        },
+        {
+          "aliasColors": {},
+          "bars": false,
+          "dashLength": 10,
+          "dashes": false,
+          "datasource": "$datasource",
+          "fill": 1,
+          "id": 19,
+          "legend": {
+            "avg": false,
+            "current": false,
+            "max": false,
+            "min": false,
+            "show": true,
+            "total": false,
+            "values": false
+          },
+          "lines": true,
+          "linewidth": 1,
+          "links": [],
+          "nullPointMode": "null",
+          "percentage": false,
+          "pointradius": 5,
+          "points": false,
+          "renderer": "flot",
+          "seriesOverrides": [],
+          "spaceLength": 10,
+          "span": 6,
+          "stack": false,
+          "steppedLine": false,
+          "targets": [
+            {
+              "expr": "sum by (instance) (rate(response_time_count[$interval]))",
+              "interval": "",
+              "intervalFactor": 2,
+              "legendFormat": "{{instance}}",
+              "refId": "A",
+              "step": 240
+            }
+          ],
+          "thresholds": [],
+          "timeFrom": null,
+          "timeShift": null,
+          "title": "Request volume",
+          "tooltip": {
+            "shared": true,
+            "sort": 0,
+            "value_type": "individual"
+          },
+          "type": "graph",
+          "xaxis": {
+            "buckets": null,
+            "mode": "time",
+            "name": null,
+            "show": true,
+            "values": []
+          },
+          "yaxes": [
+            {
+              "format": "short",
+              "label": null,
+              "logBase": 1,
+              "max": null,
+              "min": null,
               "show": true
             },
             {
@@ -115,6 +196,8 @@
         {
           "aliasColors": {},
           "bars": false,
+          "dashLength": 10,
+          "dashes": false,
           "datasource": "$datasource",
           "description": "Validation count for DNS-01",
           "fill": 1,
@@ -137,18 +220,20 @@
           "points": false,
           "renderer": "flot",
           "seriesOverrides": [],
+          "spaceLength": 10,
           "span": 4,
           "stack": false,
           "steppedLine": false,
           "targets": [
             {
               "expr": "sum by (result) (rate(validation_time_count{type=\"dns-01\"}[$interval]))",
+              "format": "time_series",
               "interval": "",
               "intervalFactor": 2,
               "legendFormat": "{{result}}",
               "metric": "",
               "refId": "A",
-              "step": 600
+              "step": 240
             }
           ],
           "thresholds": [],
@@ -162,6 +247,7 @@
           },
           "type": "graph",
           "xaxis": {
+            "buckets": null,
             "mode": "time",
             "name": null,
             "show": true,
@@ -189,6 +275,8 @@
         {
           "aliasColors": {},
           "bars": false,
+          "dashLength": 10,
+          "dashes": false,
           "datasource": "$datasource",
           "description": "Validation count for HTTP-01",
           "fill": 1,
@@ -211,6 +299,7 @@
           "points": false,
           "renderer": "flot",
           "seriesOverrides": [],
+          "spaceLength": 10,
           "span": 4,
           "stack": false,
           "steppedLine": false,
@@ -222,7 +311,7 @@
               "legendFormat": "{{result}}",
               "metric": "",
               "refId": "A",
-              "step": 600
+              "step": 240
             }
           ],
           "thresholds": [],
@@ -236,6 +325,7 @@
           },
           "type": "graph",
           "xaxis": {
+            "buckets": null,
             "mode": "time",
             "name": null,
             "show": true,
@@ -263,6 +353,8 @@
         {
           "aliasColors": {},
           "bars": false,
+          "dashLength": 10,
+          "dashes": false,
           "datasource": "$datasource",
           "description": "Validation count for TLS-SNI-01",
           "fill": 1,
@@ -285,6 +377,7 @@
           "points": false,
           "renderer": "flot",
           "seriesOverrides": [],
+          "spaceLength": 10,
           "span": 4,
           "stack": false,
           "steppedLine": false,
@@ -296,7 +389,7 @@
               "legendFormat": "{{result}}",
               "metric": "",
               "refId": "A",
-              "step": 600
+              "step": 240
             }
           ],
           "thresholds": [],
@@ -310,6 +403,7 @@
           },
           "type": "graph",
           "xaxis": {
+            "buckets": null,
             "mode": "time",
             "name": null,
             "show": true,
@@ -349,6 +443,8 @@
         {
           "aliasColors": {},
           "bars": false,
+          "dashLength": 10,
+          "dashes": false,
           "datasource": "$datasource",
           "fill": 1,
           "id": 3,
@@ -370,12 +466,14 @@
           "points": false,
           "renderer": "flot",
           "seriesOverrides": [],
+          "spaceLength": 10,
           "span": 6,
           "stack": false,
           "steppedLine": false,
           "targets": [
             {
-              "expr": "sum by (code) (rate(response_time_count{method=\"GET\"}[$interval]))",
+              "expr": "sum by (code, instance) (rate(response_time_count{method=\"GET\",instance=~\".*wfe.*\"}[$interval]))",
+              "interval": "",
               "intervalFactor": 2,
               "legendFormat": "{{code}}",
               "metric": "response_",
@@ -386,7 +484,7 @@
           "thresholds": [],
           "timeFrom": null,
           "timeShift": null,
-          "title": "GETs per second by response code",
+          "title": "GETs per second by response code (WFE)",
           "tooltip": {
             "shared": true,
             "sort": 0,
@@ -394,6 +492,7 @@
           },
           "type": "graph",
           "xaxis": {
+            "buckets": null,
             "mode": "time",
             "name": null,
             "show": true,
@@ -421,6 +520,8 @@
         {
           "aliasColors": {},
           "bars": false,
+          "dashLength": 10,
+          "dashes": false,
           "datasource": "$datasource",
           "fill": 1,
           "id": 4,
@@ -442,12 +543,13 @@
           "points": false,
           "renderer": "flot",
           "seriesOverrides": [],
+          "spaceLength": 10,
           "span": 6,
           "stack": false,
           "steppedLine": false,
           "targets": [
             {
-              "expr": "sum by (code) (rate(response_time_count{method=\"POST\"}[$interval]))",
+              "expr": "sum by (code) (rate(response_time_count{method=\"POST\",instance=~\".*wfe.*\"}[$interval]))",
               "intervalFactor": 2,
               "legendFormat": "{{code}}",
               "refId": "A",
@@ -457,7 +559,7 @@
           "thresholds": [],
           "timeFrom": null,
           "timeShift": null,
-          "title": "POSTs per second by response code",
+          "title": "POSTs per second by response code (WFE)",
           "tooltip": {
             "shared": true,
             "sort": 0,
@@ -465,6 +567,7 @@
           },
           "type": "graph",
           "xaxis": {
+            "buckets": null,
             "mode": "time",
             "name": null,
             "show": true,
@@ -504,6 +607,8 @@
         {
           "aliasColors": {},
           "bars": false,
+          "dashLength": 10,
+          "dashes": false,
           "datasource": "$datasource",
           "fill": 1,
           "id": 5,
@@ -525,6 +630,7 @@
           "points": false,
           "renderer": "flot",
           "seriesOverrides": [],
+          "spaceLength": 10,
           "span": 4,
           "stack": false,
           "steppedLine": false,
@@ -535,7 +641,7 @@
               "intervalFactor": 2,
               "legendFormat": "{{endpoint}}",
               "refId": "A",
-              "step": 600
+              "step": 240
             }
           ],
           "thresholds": [],
@@ -549,6 +655,7 @@
           },
           "type": "graph",
           "xaxis": {
+            "buckets": null,
             "mode": "time",
             "name": null,
             "show": true,
@@ -576,6 +683,8 @@
         {
           "aliasColors": {},
           "bars": false,
+          "dashLength": 10,
+          "dashes": false,
           "datasource": "$datasource",
           "fill": 1,
           "id": 6,
@@ -597,6 +706,7 @@
           "points": false,
           "renderer": "flot",
           "seriesOverrides": [],
+          "spaceLength": 10,
           "span": 4,
           "stack": false,
           "steppedLine": false,
@@ -606,8 +716,9 @@
               "interval": "",
               "intervalFactor": 2,
               "legendFormat": "{{endpoint}}",
+              "metric": "response_",
               "refId": "A",
-              "step": 600
+              "step": 240
             }
           ],
           "thresholds": [],
@@ -621,6 +732,7 @@
           },
           "type": "graph",
           "xaxis": {
+            "buckets": null,
             "mode": "time",
             "name": null,
             "show": true,
@@ -648,6 +760,8 @@
         {
           "aliasColors": {},
           "bars": false,
+          "dashLength": 10,
+          "dashes": false,
           "datasource": "$datasource",
           "fill": 1,
           "id": 14,
@@ -669,6 +783,7 @@
           "points": false,
           "renderer": "flot",
           "seriesOverrides": [],
+          "spaceLength": 10,
           "span": 4,
           "stack": false,
           "steppedLine": false,
@@ -680,7 +795,7 @@
               "legendFormat": "{{code}} {{endpoint}}",
               "metric": "",
               "refId": "A",
-              "step": 600
+              "step": 240
             }
           ],
           "thresholds": [],
@@ -694,6 +809,7 @@
           },
           "type": "graph",
           "xaxis": {
+            "buckets": null,
             "mode": "time",
             "name": null,
             "show": true,
@@ -733,6 +849,8 @@
         {
           "aliasColors": {},
           "bars": false,
+          "dashLength": 10,
+          "dashes": false,
           "datasource": "$datasource",
           "fill": 1,
           "id": 9,
@@ -754,13 +872,16 @@
           "points": false,
           "renderer": "flot",
           "seriesOverrides": [],
+          "spaceLength": 10,
           "span": 3,
           "stack": false,
           "steppedLine": false,
           "targets": [
             {
               "expr": "sum by (code) (rate(response_time_count{endpoint=\"/acme/new-reg\"}[$interval]))",
+              "interval": "",
               "intervalFactor": 2,
+              "legendFormat": "{{code}}",
               "refId": "A",
               "step": 600
             }
@@ -776,6 +897,7 @@
           },
           "type": "graph",
           "xaxis": {
+            "buckets": null,
             "mode": "time",
             "name": null,
             "show": true,
@@ -787,7 +909,7 @@
               "label": null,
               "logBase": 1,
               "max": null,
-              "min": null,
+              "min": "0",
               "show": true
             },
             {
@@ -803,6 +925,8 @@
         {
           "aliasColors": {},
           "bars": false,
+          "dashLength": 10,
+          "dashes": false,
           "datasource": "$datasource",
           "fill": 1,
           "id": 10,
@@ -824,6 +948,7 @@
           "points": false,
           "renderer": "flot",
           "seriesOverrides": [],
+          "spaceLength": 10,
           "span": 3,
           "stack": false,
           "steppedLine": false,
@@ -847,6 +972,7 @@
           },
           "type": "graph",
           "xaxis": {
+            "buckets": null,
             "mode": "time",
             "name": null,
             "show": true,
@@ -874,6 +1000,8 @@
         {
           "aliasColors": {},
           "bars": false,
+          "dashLength": 10,
+          "dashes": false,
           "datasource": "$datasource",
           "fill": 1,
           "id": 11,
@@ -895,6 +1023,7 @@
           "points": false,
           "renderer": "flot",
           "seriesOverrides": [],
+          "spaceLength": 10,
           "span": 3,
           "stack": false,
           "steppedLine": false,
@@ -918,6 +1047,174 @@
           },
           "type": "graph",
           "xaxis": {
+            "buckets": null,
+            "mode": "time",
+            "name": null,
+            "show": true,
+            "values": []
+          },
+          "yaxes": [
+            {
+              "format": "short",
+              "label": null,
+              "logBase": 1,
+              "max": null,
+              "min": "0",
+              "show": true
+            },
+            {
+              "format": "short",
+              "label": null,
+              "logBase": 1,
+              "max": null,
+              "min": null,
+              "show": true
+            }
+          ]
+        },
+        {
+          "aliasColors": {},
+          "bars": false,
+          "dashLength": 10,
+          "dashes": false,
+          "datasource": "$datasource",
+          "fill": 1,
+          "id": 12,
+          "legend": {
+            "avg": false,
+            "current": false,
+            "max": false,
+            "min": false,
+            "show": true,
+            "total": false,
+            "values": false
+          },
+          "lines": true,
+          "linewidth": 1,
+          "links": [],
+          "nullPointMode": "null",
+          "percentage": false,
+          "pointradius": 5,
+          "points": false,
+          "renderer": "flot",
+          "seriesOverrides": [],
+          "spaceLength": 10,
+          "span": 3,
+          "stack": false,
+          "steppedLine": false,
+          "targets": [
+            {
+              "expr": "sum by (code) (rate(response_time_count{method=\"POST\",endpoint=\"/acme/challenge/\"}[$interval]))",
+              "interval": "",
+              "intervalFactor": 2,
+              "legendFormat": "{{code}}",
+              "metric": "",
+              "refId": "A",
+              "step": 600
+            }
+          ],
+          "thresholds": [],
+          "timeFrom": null,
+          "timeShift": null,
+          "title": "POST challenge by response code",
+          "tooltip": {
+            "shared": true,
+            "sort": 0,
+            "value_type": "individual"
+          },
+          "type": "graph",
+          "xaxis": {
+            "buckets": null,
+            "mode": "time",
+            "name": null,
+            "show": true,
+            "values": []
+          },
+          "yaxes": [
+            {
+              "format": "short",
+              "label": null,
+              "logBase": 1,
+              "max": null,
+              "min": "0",
+              "show": true
+            },
+            {
+              "format": "short",
+              "label": null,
+              "logBase": 1,
+              "max": null,
+              "min": null,
+              "show": true
+            }
+          ]
+        }
+      ],
+      "repeat": null,
+      "repeatIteration": null,
+      "repeatRowId": null,
+      "showTitle": false,
+      "title": "Dashboard Row",
+      "titleSize": "h6"
+    },
+    {
+      "collapse": false,
+      "height": 275,
+      "panels": [
+        {
+          "aliasColors": {},
+          "bars": false,
+          "dashLength": 10,
+          "dashes": false,
+          "datasource": "$datasource",
+          "fill": 1,
+          "id": 13,
+          "legend": {
+            "avg": false,
+            "current": false,
+            "max": false,
+            "min": false,
+            "show": true,
+            "total": false,
+            "values": false
+          },
+          "lines": true,
+          "linewidth": 1,
+          "links": [],
+          "nullPointMode": "null",
+          "percentage": false,
+          "pointradius": 5,
+          "points": false,
+          "renderer": "flot",
+          "seriesOverrides": [],
+          "spaceLength": 10,
+          "span": 7,
+          "stack": false,
+          "steppedLine": false,
+          "targets": [
+            {
+              "expr": "sum by (instance) (irate(process_cpu_seconds_total{job=~\"boulder_.*\"}[$interval]))",
+              "format": "time_series",
+              "interval": "",
+              "intervalFactor": 2,
+              "legendFormat": "{{instance}}",
+              "metric": "process_cpu_seconds_total",
+              "refId": "A",
+              "step": 240
+            }
+          ],
+          "thresholds": [],
+          "timeFrom": null,
+          "timeShift": null,
+          "title": "Boulder CPU",
+          "tooltip": {
+            "shared": true,
+            "sort": 0,
+            "value_type": "individual"
+          },
+          "type": "graph",
+          "xaxis": {
+            "buckets": null,
             "mode": "time",
             "name": null,
             "show": true,
@@ -945,9 +1242,141 @@
         {
           "aliasColors": {},
           "bars": false,
+          "dashLength": 10,
+          "dashes": false,
           "datasource": "$datasource",
+          "description": "Shows expiry-mailer stats. Missing data for an extended period of time means that mail is not being sent.",
           "fill": 1,
-          "id": 12,
+          "id": 24,
+          "legend": {
+            "alignAsTable": true,
+            "avg": false,
+            "current": false,
+            "hideEmpty": false,
+            "hideZero": false,
+            "max": false,
+            "min": true,
+            "rightSide": true,
+            "show": true,
+            "total": true,
+            "values": true
+          },
+          "lines": true,
+          "linewidth": 1,
+          "links": [],
+          "nullPointMode": "null as zero",
+          "percentage": false,
+          "pointradius": 5,
+          "points": false,
+          "renderer": "flot",
+          "seriesOverrides": [],
+          "spaceLength": 10,
+          "span": 5,
+          "stack": false,
+          "steppedLine": false,
+          "targets": [
+            {
+              "expr": "sum(rate(Mailer_SendMail_Attempts[5m]))",
+              "format": "time_series",
+              "hide": false,
+              "intervalFactor": 2,
+              "legendFormat": "Attempts",
+              "refId": "A",
+              "step": 240
+            },
+            {
+              "expr": "sum(rate(Mailer_SendMail_Successes[5m]))",
+              "format": "time_series",
+              "hide": false,
+              "intervalFactor": 2,
+              "legendFormat": "Success",
+              "refId": "B",
+              "step": 240
+            },
+            {
+              "expr": "sum(rate(Mailer_SendMail_Errors_EOF[5m]))",
+              "format": "time_series",
+              "hide": false,
+              "intervalFactor": 2,
+              "legendFormat": "Error: EOF",
+              "refId": "C",
+              "step": 240
+            },
+            {
+              "expr": "sum(rate(Mailer_SendMail_Errors_SMTP_421[5m]))",
+              "format": "time_series",
+              "hide": false,
+              "intervalFactor": 2,
+              "legendFormat": "Error: 421",
+              "refId": "D",
+              "step": 240
+            },
+            {
+              "expr": "sum(rate(Mailer_SendMail_Reconnects[5m]))",
+              "format": "time_series",
+              "hide": false,
+              "intervalFactor": 2,
+              "legendFormat": "Reconnects",
+              "refId": "E",
+              "step": 240
+            }
+          ],
+          "thresholds": [],
+          "timeFrom": null,
+          "timeShift": null,
+          "title": "Expiry-mailer",
+          "tooltip": {
+            "shared": true,
+            "sort": 0,
+            "value_type": "individual"
+          },
+          "type": "graph",
+          "xaxis": {
+            "buckets": null,
+            "mode": "time",
+            "name": null,
+            "show": true,
+            "values": []
+          },
+          "yaxes": [
+            {
+              "format": "short",
+              "label": null,
+              "logBase": 1,
+              "max": null,
+              "min": "0",
+              "show": true
+            },
+            {
+              "format": "short",
+              "label": null,
+              "logBase": 1,
+              "max": null,
+              "min": null,
+              "show": true
+            }
+          ]
+        }
+      ],
+      "repeat": null,
+      "repeatIteration": null,
+      "repeatRowId": null,
+      "showTitle": false,
+      "title": "Dashboard Row",
+      "titleSize": "h6"
+    },
+    {
+      "collapse": false,
+      "height": 250,
+      "panels": [
+        {
+          "aliasColors": {},
+          "bars": false,
+          "dashLength": 10,
+          "dashes": false,
+          "datasource": "$datasource",
+          "fill": 3,
+          "id": 16,
           "legend": {
             "avg": false,
             "current": false,
@@ -966,23 +1395,25 @@
           "points": false,
           "renderer": "flot",
           "seriesOverrides": [],
-          "span": 3,
-          "stack": false,
+          "spaceLength": 10,
+          "span": 4,
+          "stack": true,
           "steppedLine": false,
           "targets": [
             {
-              "expr": "sum by (code) (rate(response_time_count{method=\"POST\",endpoint=\"/acme/challenge\"}[$interval]))",
+              "expr": "sum by (method, code) (rate(response_time_count{instance=~\".*ocsp.*\",code!=\"405\"}[$interval]))",
               "interval": "",
               "intervalFactor": 2,
-              "legendFormat": "{{code}}",
+              "legendFormat": "{{method}}, {{code}}",
+              "metric": "",
               "refId": "A",
-              "step": 600
+              "step": 240
             }
           ],
           "thresholds": [],
           "timeFrom": null,
           "timeShift": null,
-          "title": "POST challenge by response code",
+          "title": "OCSP response volume",
           "tooltip": {
             "shared": true,
             "sort": 0,
@@ -990,6 +1421,340 @@
           },
           "type": "graph",
           "xaxis": {
+            "buckets": null,
+            "mode": "time",
+            "name": null,
+            "show": true,
+            "values": []
+          },
+          "yaxes": [
+            {
+              "format": "rps",
+              "label": null,
+              "logBase": 1,
+              "max": null,
+              "min": null,
+              "show": true
+            },
+            {
+              "format": "short",
+              "label": null,
+              "logBase": 1,
+              "max": null,
+              "min": null,
+              "show": true
+            }
+          ]
+        },
+        {
+          "aliasColors": {},
+          "bars": false,
+          "dashLength": 10,
+          "dashes": false,
+          "datasource": "$datasource",
+          "fill": 1,
+          "id": 17,
+          "legend": {
+            "avg": false,
+            "current": false,
+            "max": false,
+            "min": false,
+            "show": true,
+            "total": false,
+            "values": false
+          },
+          "lines": true,
+          "linewidth": 1,
+          "links": [],
+          "nullPointMode": "null",
+          "percentage": false,
+          "pointradius": 5,
+          "points": false,
+          "renderer": "flot",
+          "seriesOverrides": [],
+          "spaceLength": 10,
+          "span": 4,
+          "stack": false,
+          "steppedLine": false,
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.5, sum by (le, endpoint) (rate(response_time_bucket{instance=~\".*ocsp.*\"}[$interval])))",
+              "interval": "",
+              "intervalFactor": 2,
+              "legendFormat": "median",
+              "refId": "A",
+              "step": 240
+            },
+            {
+              "expr": "histogram_quantile(0.99, sum by (le, endpoint) (rate(response_time_bucket{instance=~\".*ocsp.*\"}[$interval])))",
+              "hide": false,
+              "intervalFactor": 2,
+              "legendFormat": "99th percentile",
+              "refId": "B",
+              "step": 240
+            }
+          ],
+          "thresholds": [],
+          "timeFrom": null,
+          "timeShift": null,
+          "title": "OCSP latency",
+          "tooltip": {
+            "shared": true,
+            "sort": 0,
+            "value_type": "individual"
+          },
+          "type": "graph",
+          "xaxis": {
+            "buckets": null,
+            "mode": "time",
+            "name": null,
+            "show": true,
+            "values": []
+          },
+          "yaxes": [
+            {
+              "format": "s",
+              "label": null,
+              "logBase": 1,
+              "max": null,
+              "min": null,
+              "show": true
+            },
+            {
+              "format": "short",
+              "label": null,
+              "logBase": 1,
+              "max": null,
+              "min": null,
+              "show": true
+            }
+          ]
+        },
+        {
+          "aliasColors": {},
+          "bars": false,
+          "dashLength": 10,
+          "dashes": false,
+          "datasource": "$datasource",
+          "fill": 1,
+          "id": 18,
+          "legend": {
+            "avg": false,
+            "current": false,
+            "max": false,
+            "min": false,
+            "show": true,
+            "total": false,
+            "values": false
+          },
+          "lines": true,
+          "linewidth": 1,
+          "links": [],
+          "nullPointMode": "null",
+          "percentage": false,
+          "pointradius": 5,
+          "points": false,
+          "renderer": "flot",
+          "seriesOverrides": [],
+          "spaceLength": 10,
+          "span": 4,
+          "stack": false,
+          "steppedLine": false,
+          "targets": [
+            {
+              "expr": "sum by (job) (rate(response_time_count{code!~\"[45]0.\",instance=~\".*ocsp.*\"}[$interval])) / sum by (job) (rate(response_time_count{instance=~\".*ocsp.*\"}[$interval]))",
+              "interval": "",
+              "intervalFactor": 2,
+              "legendFormat": "success rate",
+              "refId": "A",
+              "step": 240
+            }
+          ],
+          "thresholds": [],
+          "timeFrom": null,
+          "timeShift": null,
+          "title": "OCSP success rate (excluding 400s)",
+          "tooltip": {
+            "shared": true,
+            "sort": 0,
+            "value_type": "individual"
+          },
+          "type": "graph",
+          "xaxis": {
+            "buckets": null,
+            "mode": "time",
+            "name": null,
+            "show": true,
+            "values": []
+          },
+          "yaxes": [
+            {
+              "format": "percentunit",
+              "label": null,
+              "logBase": 1,
+              "max": null,
+              "min": "0",
+              "show": true
+            },
+            {
+              "format": "short",
+              "label": null,
+              "logBase": 1,
+              "max": null,
+              "min": null,
+              "show": true
+            }
+          ]
+        }
+      ],
+      "repeat": null,
+      "repeatIteration": null,
+      "repeatRowId": null,
+      "showTitle": false,
+      "title": "Dashboard Row",
+      "titleSize": "h6"
+    },
+    {
+      "collapse": false,
+      "height": 250,
+      "panels": [
+        {
+          "aliasColors": {},
+          "bars": false,
+          "dashLength": 10,
+          "dashes": false,
+          "datasource": "$datasource",
+          "fill": 1,
+          "id": 20,
+          "legend": {
+            "avg": false,
+            "current": false,
+            "max": false,
+            "min": false,
+            "show": true,
+            "total": false,
+            "values": false
+          },
+          "lines": true,
+          "linewidth": 1,
+          "links": [],
+          "nullPointMode": "null",
+          "percentage": false,
+          "pointradius": 5,
+          "points": false,
+          "renderer": "flot",
+          "seriesOverrides": [],
+          "spaceLength": 10,
+          "span": 12,
+          "stack": true,
+          "steppedLine": false,
+          "targets": [
+            {
+              "expr": "sum by (purpose) (rate(signatures[$interval]))",
+              "intervalFactor": 2,
+              "refId": "A",
+              "step": 120
+            }
+          ],
+          "thresholds": [],
+          "timeFrom": null,
+          "timeShift": null,
+          "title": "HSM signatures",
+          "tooltip": {
+            "shared": true,
+            "sort": 0,
+            "value_type": "individual"
+          },
+          "type": "graph",
+          "xaxis": {
+            "buckets": null,
+            "mode": "time",
+            "name": null,
+            "show": true,
+            "values": []
+          },
+          "yaxes": [
+            {
+              "format": "ops",
+              "label": null,
+              "logBase": 1,
+              "max": null,
+              "min": "0",
+              "show": true
+            },
+            {
+              "format": "short",
+              "label": null,
+              "logBase": 1,
+              "max": null,
+              "min": null,
+              "show": true
+            }
+          ]
+        }
+      ],
+      "repeat": null,
+      "repeatIteration": null,
+      "repeatRowId": null,
+      "showTitle": false,
+      "title": "Dashboard Row",
+      "titleSize": "h6"
+    },
+    {
+      "collapse": false,
+      "height": 250,
+      "panels": [
+        {
+          "aliasColors": {},
+          "bars": false,
+          "dashLength": 10,
+          "dashes": false,
+          "datasource": "$datasource",
+          "fill": 1,
+          "id": 21,
+          "legend": {
+            "avg": false,
+            "current": false,
+            "max": false,
+            "min": false,
+            "show": true,
+            "total": false,
+            "values": false
+          },
+          "lines": true,
+          "linewidth": 1,
+          "links": [],
+          "nullPointMode": "null",
+          "percentage": false,
+          "pointradius": 5,
+          "points": false,
+          "renderer": "flot",
+          "seriesOverrides": [],
+          "spaceLength": 10,
+          "span": 12,
+          "stack": false,
+          "steppedLine": false,
+          "targets": [
+            {
+              "expr": "irate(mysql_info_schema_innodb_metrics_index_index_page_splits_total[$interval])",
+              "intervalFactor": 2,
+              "metric": "e",
+              "refId": "A",
+              "step": 120
+            }
+          ],
+          "thresholds": [],
+          "timeFrom": null,
+          "timeShift": null,
+          "title": "InnoDB page splits",
+          "tooltip": {
+            "shared": true,
+            "sort": 0,
+            "value_type": "individual"
+          },
+          "type": "graph",
+          "xaxis": {
+            "buckets": null,
             "mode": "time",
             "name": null,
             "show": true,
@@ -1029,9 +1794,11 @@
         {
           "aliasColors": {},
           "bars": false,
+          "dashLength": 10,
+          "dashes": false,
           "datasource": "$datasource",
           "fill": 1,
-          "id": 13,
+          "id": 22,
           "legend": {
             "avg": false,
             "current": false,
@@ -1050,24 +1817,60 @@
           "points": false,
           "renderer": "flot",
           "seriesOverrides": [],
+          "spaceLength": 10,
           "span": 12,
           "stack": false,
           "steppedLine": false,
           "targets": [
             {
-              "expr": "sum by (instance) (irate(process_cpu_seconds_total{job=\"boulder_clients\"}[$interval]))",
-              "interval": "",
+              "expr": "irate(ct_googleapis_com_icarus_Submits[5m])",
+              "format": "time_series",
               "intervalFactor": 2,
-              "legendFormat": "{{instance}}",
-              "metric": "process_cpu_seconds_total",
+              "legendFormat": "ct_googleapis_com_icarus",
+              "metric": "ct_googleapis_com_icarus_Submits",
               "refId": "A",
-              "step": 240
+              "step": 120
+            },
+            {
+              "expr": "irate(ctlog_gen2_api_venafi_com__Submits[5m])",
+              "format": "time_series",
+              "intervalFactor": 2,
+              "legendFormat": "ctlog_gen2_api_venafi_com",
+              "metric": "ctlog_gen2_api_venafi_com__Submits",
+              "refId": "B",
+              "step": 120
+            },
+            {
+              "expr": "irate(sabre_ct_comodo_com__Submits[5m])",
+              "format": "time_series",
+              "intervalFactor": 2,
+              "legendFormat": "sabre_ct_comodo_com",
+              "metric": "sabre_ct_comodo_com__Submits",
+              "refId": "C",
+              "step": 120
+            },
+            {
+              "expr": "irate(mammoth_ct_comodo_com__Submits[5m])",
+              "format": "time_series",
+              "intervalFactor": 2,
+              "legendFormat": "mammoth_ct_comodo_com",
+              "metric": "mammoth_ct_comodo_com__Submits",
+              "refId": "D",
+              "step": 120
+            },
+            {
+              "expr": "sum by (log, status) (irate(ct_submission_time_seconds_count[5m]))",
+              "format": "time_series",
+              "intervalFactor": 2,
+              "legendFormat": "{{status}} {{log}}",
+              "refId": "E",
+              "step": 120
             }
           ],
           "thresholds": [],
           "timeFrom": null,
           "timeShift": null,
-          "title": "Boulder CPU",
+          "title": "CT submissions",
           "tooltip": {
             "shared": true,
             "sort": 0,
@@ -1075,6 +1878,7 @@
           },
           "type": "graph",
           "xaxis": {
+            "buckets": null,
             "mode": "time",
             "name": null,
             "show": true,
@@ -1110,7 +1914,95 @@
     {
       "collapse": false,
       "height": 250,
-      "panels": [],
+      "panels": [
+        {
+          "aliasColors": {},
+          "bars": false,
+          "dashLength": 10,
+          "dashes": false,
+          "datasource": "$datasource",
+          "fill": 1,
+          "id": 23,
+          "legend": {
+            "avg": false,
+            "current": false,
+            "max": false,
+            "min": false,
+            "show": true,
+            "total": false,
+            "values": false
+          },
+          "lines": true,
+          "linewidth": 1,
+          "links": [],
+          "nullPointMode": "null",
+          "percentage": false,
+          "pointradius": 5,
+          "points": false,
+          "renderer": "flot",
+          "seriesOverrides": [],
+          "spaceLength": 10,
+          "span": 12,
+          "stack": false,
+          "steppedLine": false,
+          "targets": [
+            {
+              "expr": "irate(IsSafeDomain_IsSafeDomain_Status_Bad{job=\"boulder_va\"}[$interval])",
+              "format": "time_series",
+              "interval": "",
+              "intervalFactor": 2,
+              "legendFormat": "GSB status: bad",
+              "metric": "IsSafeDomain_IsSafeDomain_Status_Bad",
+              "refId": "A",
+              "step": 120
+            },
+            {
+              "expr": "irate(IsSafeDomain_IsSafeDomain_Status_Good{job=\"boulder_va\"}[$interval])",
+              "format": "time_series",
+              "interval": "",
+              "intervalFactor": 2,
+              "legendFormat": "GSB status: good",
+              "refId": "B",
+              "step": 120
+            }
+          ],
+          "thresholds": [],
+          "timeFrom": null,
+          "timeShift": null,
+          "title": "Safe Browsing",
+          "tooltip": {
+            "shared": true,
+            "sort": 0,
+            "value_type": "individual"
+          },
+          "type": "graph",
+          "xaxis": {
+            "buckets": null,
+            "mode": "time",
+            "name": null,
+            "show": true,
+            "values": []
+          },
+          "yaxes": [
+            {
+              "format": "short",
+              "label": null,
+              "logBase": 1,
+              "max": null,
+              "min": null,
+              "show": true
+            },
+            {
+              "format": "short",
+              "label": null,
+              "logBase": 1,
+              "max": null,
+              "min": null,
+              "show": true
+            }
+          ]
+        }
+      ],
       "repeat": null,
       "repeatIteration": null,
       "repeatRowId": null,
@@ -1244,5 +2136,5 @@
   },
   "timezone": "utc",
   "title": "Boulderdash",
-  "version": 6
+  "version": 51
 }

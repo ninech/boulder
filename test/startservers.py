@@ -28,16 +28,18 @@ def install(race_detection):
 
     return subprocess.call(cmd, shell=True) == 0
 
-def run(cmd, race_detection):
+def run(cmd, race_detection, fakeclock):
     e = os.environ.copy()
     e.setdefault("GORACE", "halt_on_error=1")
+    if fakeclock is not None:
+        e.setdefault("FAKECLOCK", fakeclock)
     # Note: Must use exec here so that killing this process kills the command.
     cmd = """exec ./bin/%s""" % cmd
     p = subprocess.Popen(cmd, shell=True, env=e)
     p.cmd = cmd
     return p
 
-def start(race_detection):
+def start(race_detection, fakeclock=None):
     """Return True if everything builds and starts.
 
     Give up and return False if anything fails to build, or dies at
@@ -54,6 +56,8 @@ def start(race_detection):
             [":19094", "ra.boulder:9094"],
             [":19095", "sa.boulder:9095"],
             [":19096", "ca.boulder:9096"],
+            [":19097", "va.boulder:9097"],
+            [":19098", "va.boulder:9098"]
     ]:
         forward(srv[0], srv[1])
     progs = [
@@ -62,6 +66,7 @@ def start(race_detection):
         'gsb-test-srv -apikey my-voice-is-my-passport',
         'boulder-sa --config %s' % os.path.join(default_config_dir, "sa.json"),
         'boulder-wfe --config %s' % os.path.join(default_config_dir, "wfe.json"),
+        'boulder-wfe2 --config %s' % os.path.join(default_config_dir, "wfe2.json"),
         'boulder-ra --config %s' % os.path.join(default_config_dir, "ra.json"),
         'boulder-ca --config %s' % os.path.join(default_config_dir, "ca.json"),
         'boulder-va --config %s' % os.path.join(default_config_dir, "va.json"),
@@ -70,13 +75,19 @@ def start(race_detection):
         'ocsp-responder --config %s' % os.path.join(default_config_dir, "ocsp-responder.json"),
         'ct-test-srv',
         'dns-test-srv',
-        'mail-test-srv --closeFirst 5'
+        'mail-test-srv --closeFirst 5 --cert test/mail-test-srv/localhost/cert.pem --key test/mail-test-srv/localhost/key.pem'
     ]
+    if default_config_dir.startswith("test/config-next"):
+        # Run the two 'remote' VAs
+        progs.extend([
+            'boulder-va --config %s' % os.path.join(default_config_dir, "va-remote-a.json"),
+            'boulder-va --config %s' % os.path.join(default_config_dir, "va-remote-b.json")
+        ])
     if not install(race_detection):
         return False
     for prog in progs:
         try:
-            processes.append(run(prog, race_detection))
+            processes.append(run(prog, race_detection, fakeclock))
         except Exception as e:
             print(e)
             return False
@@ -92,7 +103,12 @@ def start(race_detection):
             # If one of the servers has died, quit immediately.
             if not check():
                 return False
-            ports = range(8000, 8005) + [4000, 4430]
+            ports = range(8000, 8005) + [4000, 4001, 4430, 4431]
+            if default_config_dir.startswith("test/config-next"):
+                # Add the two 'remote' VA debug ports
+                ports.extend([8011, 8012])
+            # Add the wfe v2 debug port
+            ports.extend([8013])
             for debug_port in ports:
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 s.connect(('localhost', debug_port))
@@ -148,14 +164,13 @@ def check():
 
 @atexit.register
 def stop():
-    # When we are about to exit, send SIGKILL to each subprocess and wait for
+    # When we are about to exit, send SIGTERM to each subprocess and wait for
     # them to nicely die. This reflects the restart process in prod and allows
     # us to exercise the graceful shutdown code paths.
-    # TODO(jsha): Switch to SIGTERM once we fix
-    # https://github.com/letsencrypt/boulder/issues/2410 and remove AMQP, to
-    # make shutdown less noisy.
+    global processes
     for p in processes:
         if p.poll() is None:
-            p.send_signal(signal.SIGKILL)
+            p.send_signal(signal.SIGTERM)
     for p in processes:
         p.wait()
+    processes = []

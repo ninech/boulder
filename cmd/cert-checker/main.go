@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jmhodges/clock"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/letsencrypt/boulder/cmd"
 	"github.com/letsencrypt/boulder/core"
@@ -96,7 +97,7 @@ type certChecker struct {
 	rMu          *sync.Mutex
 	issuedReport report
 	checkPeriod  time.Duration
-	stats        metrics.Statter
+	stats        metrics.Scope
 }
 
 func newChecker(saDbMap certDB, clk clock.Clock, pa core.PolicyAuthority, period time.Duration) certChecker {
@@ -233,7 +234,13 @@ func (c *certChecker) checkCert(cert core.Certificate) (problems []string) {
 		// Check that the PA is still willing to issue for each name in DNSNames + CommonName
 		for _, name := range append(parsedCert.DNSNames, parsedCert.Subject.CommonName) {
 			id := core.AcmeIdentifier{Type: core.IdentifierDNS, Value: name}
-			if err = c.pa.WillingToIssue(id); err != nil {
+			// TODO(https://github.com/letsencrypt/boulder/issues/3371): Distinguish
+			// between certificates issued by v1 and v2 API.
+			checkFunc := c.pa.WillingToIssue
+			if features.Enabled(features.WildcardDomains) {
+				checkFunc = c.pa.WillingToIssueWildcard
+			}
+			if err = checkFunc(id); err != nil {
 				problems = append(problems, fmt.Sprintf("Policy Authority isn't willing to issue for '%s': %s", name, err))
 			} else {
 				// For defense-in-depth, even if the PA was willing to issue for a name
@@ -297,8 +304,6 @@ func main() {
 	err = features.Set(config.CertChecker.Features)
 	cmd.FailOnError(err, "Failed to set feature flags")
 
-	stats, err := metrics.NewStatter(config.Statsd.Server, config.Statsd.Prefix)
-	cmd.FailOnError(err, "Failed to create StatsD client")
 	syslogger, err := syslog.Dial("", "", syslog.LOG_INFO|syslog.LOG_LOCAL0, "")
 	cmd.FailOnError(err, "Failed to dial syslog")
 	logger, err := blog.New(syslogger, 0, 0)
@@ -323,7 +328,8 @@ func main() {
 	cmd.FailOnError(err, "Couldn't load DB URL")
 	saDbMap, err := sa.NewDbMap(saDbURL, config.CertChecker.DBConfig.MaxDBConns)
 	cmd.FailOnError(err, "Could not connect to database")
-	go sa.ReportDbConnCount(saDbMap, metrics.NewStatsdScope(stats, "CertChecker"))
+	scope := metrics.NewPromScope(prometheus.DefaultRegisterer)
+	go sa.ReportDbConnCount(saDbMap, scope)
 
 	pa, err := policy.New(config.PA.Challenges)
 	cmd.FailOnError(err, "Failed to create PA")
@@ -332,7 +338,7 @@ func main() {
 
 	checker := newChecker(
 		saDbMap,
-		clock.Default(),
+		cmd.Clock(),
 		pa,
 		config.CertChecker.CheckPeriod.Duration,
 	)
@@ -353,7 +359,7 @@ func main() {
 		go func() {
 			s := checker.clock.Now()
 			checker.processCerts(wg, config.CertChecker.BadResultsOnly)
-			stats.TimingDuration("certChecker.processingLatency", time.Since(s), 1.0)
+			scope.TimingDuration("certChecker.processingLatency", time.Since(s))
 		}()
 	}
 	wg.Wait()

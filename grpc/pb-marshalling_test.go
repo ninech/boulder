@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"gopkg.in/square/go-jose.v1"
+	"gopkg.in/square/go-jose.v2"
 
 	"github.com/letsencrypt/boulder/core"
 	corepb "github.com/letsencrypt/boulder/core/proto"
@@ -49,7 +49,7 @@ func TestAuthzMeta(t *testing.T) {
 const JWK1JSON = `{"kty":"RSA","n":"vuc785P8lBj3fUxyZchF_uZw6WtbxcorqgTyq-qapF5lrO1U82Tp93rpXlmctj6fyFHBVVB5aXnUHJ7LZeVPod7Wnfl8p5OyhlHQHC8BnzdzCqCMKmWZNX5DtETDId0qzU7dPzh0LP0idt5buU7L9QNaabChw3nnaL47iu_1Di5Wp264p2TwACeedv2hfRDjDlJmaQXuS8Rtv9GnRWyC9JBu7XmGvGDziumnJH7Hyzh3VNu-kSPQD3vuAFgMZS6uUzOztCkT0fpOalZI6hqxtWLvXUMj-crXrn-Maavz8qRhpAyp5kcYk3jiHGgQIi7QSK2JIdRJ8APyX9HlmTN5AQ","e":"AQAB"}`
 
 func TestJWK(t *testing.T) {
-	var jwk jose.JsonWebKey
+	var jwk jose.JSONWebKey
 	err := json.Unmarshal([]byte(JWK1JSON), &jwk)
 	test.AssertNotError(t, err, "Failed to unmarshal test key")
 
@@ -95,7 +95,7 @@ func TestProblemDetails(t *testing.T) {
 }
 
 func TestChallenge(t *testing.T) {
-	var jwk jose.JsonWebKey
+	var jwk jose.JSONWebKey
 	err := json.Unmarshal([]byte(JWK1JSON), &jwk)
 	test.AssertNotError(t, err, "Failed to unmarshal test key")
 	chall := core.Challenge{
@@ -106,8 +106,8 @@ func TestChallenge(t *testing.T) {
 		ProvidedKeyAuthorization: "keyauth",
 	}
 
-	pb, err := challengeToPB(chall)
-	test.AssertNotError(t, err, "challengeToPB failed")
+	pb, err := ChallengeToPB(chall)
+	test.AssertNotError(t, err, "ChallengeToPB failed")
 	test.Assert(t, pb != nil, "Returned corepb.Challenge is nil")
 
 	recon, err := pbToChallenge(pb)
@@ -123,11 +123,12 @@ func TestChallenge(t *testing.T) {
 			AddressUsed:       ip,
 			URL:               "url",
 			Authorities:       []string{"auth"},
+			AddressesTried:    []net.IP{ip},
 		},
 	}
 	chall.Error = &probs.ProblemDetails{Type: probs.TLSProblem, Detail: "asd", HTTPStatus: 200}
-	pb, err = challengeToPB(chall)
-	test.AssertNotError(t, err, "challengeToPB failed")
+	pb, err = ChallengeToPB(chall)
+	test.AssertNotError(t, err, "ChallengeToPB failed")
 	test.Assert(t, pb != nil, "Returned corepb.Challenge is nil")
 
 	recon, err = pbToChallenge(pb)
@@ -151,6 +152,7 @@ func TestValidationRecord(t *testing.T) {
 		AddressUsed:       ip,
 		URL:               "url",
 		Authorities:       []string{"auth"},
+		AddressesTried:    []net.IP{ip},
 	}
 
 	pb, err := validationRecordToPB(vr)
@@ -171,6 +173,7 @@ func TestValidationResult(t *testing.T) {
 		AddressUsed:       ip,
 		URL:               "urlA",
 		Authorities:       []string{"authA"},
+		AddressesTried:    []net.IP{ip},
 	}
 	vrB := core.ValidationRecord{
 		Hostname:          "hostB",
@@ -179,6 +182,7 @@ func TestValidationResult(t *testing.T) {
 		AddressUsed:       ip,
 		URL:               "urlB",
 		Authorities:       []string{"authB"},
+		AddressesTried:    []net.IP{ip},
 	}
 	result := []core.ValidationRecord{vrA, vrB}
 	prob := &probs.ProblemDetails{Type: probs.TLSProblem, Detail: "asd", HTTPStatus: 200}
@@ -194,7 +198,7 @@ func TestValidationResult(t *testing.T) {
 }
 
 func TestPerformValidationReq(t *testing.T) {
-	var jwk jose.JsonWebKey
+	var jwk jose.JSONWebKey
 	err := json.Unmarshal([]byte(JWK1JSON), &jwk)
 	test.AssertNotError(t, err, "Failed to unmarshal test key")
 	domain := "example.com"
@@ -220,7 +224,7 @@ func TestPerformValidationReq(t *testing.T) {
 
 func TestRegistration(t *testing.T) {
 	contacts := []string{"email"}
-	var key jose.JsonWebKey
+	var key jose.JSONWebKey
 	err := json.Unmarshal([]byte(`
 		{
 			"e": "AQAB",
@@ -235,7 +239,7 @@ func TestRegistration(t *testing.T) {
 		Contact:   &contacts,
 		Agreement: "yup",
 		InitialIP: net.ParseIP("1.1.1.1"),
-		CreatedAt: time.Now(),
+		CreatedAt: time.Now().Round(0),
 		Status:    core.StatusValid,
 	}
 	pbReg, err := registrationToPB(inReg)
@@ -290,9 +294,9 @@ func TestAuthz(t *testing.T) {
 		Combinations:   combos,
 	}
 
-	pbAuthz, err := authzToPB(inAuthz)
-	test.AssertNotError(t, err, "authzToPB failed")
-	outAuthz, err := pbToAuthz(pbAuthz)
+	pbAuthz, err := AuthzToPB(inAuthz)
+	test.AssertNotError(t, err, "AuthzToPB failed")
+	outAuthz, err := PBToAuthz(pbAuthz)
 	test.AssertNotError(t, err, "pbToAuthz failed")
 	test.AssertDeepEquals(t, inAuthz, outAuthz)
 }
@@ -315,7 +319,7 @@ func TestSCT(t *testing.T) {
 }
 
 func TestCert(t *testing.T) {
-	now := time.Now()
+	now := time.Now().Round(0)
 	cert := core.Certificate{
 		RegistrationID: 1,
 		Serial:         "serial",
@@ -329,4 +333,120 @@ func TestCert(t *testing.T) {
 	outCert := pbToCert(certPB)
 
 	test.AssertDeepEquals(t, cert, outCert)
+}
+
+func TestOrderValid(t *testing.T) {
+	testID := int64(1)
+	testExpires := int64(1)
+	emptyString := ""
+	falseBool := false
+
+	testCases := []struct {
+		Name          string
+		Order         *corepb.Order
+		ExpectedValid bool
+	}{
+		{
+			Name: "All valid",
+			Order: &corepb.Order{
+				Id:                &testID,
+				RegistrationID:    &testID,
+				Expires:           &testExpires,
+				CertificateSerial: &emptyString,
+				Authorizations:    []string{},
+				Names:             []string{},
+				BeganProcessing:   &falseBool,
+			},
+			ExpectedValid: true,
+		},
+		{
+			Name: "Serial nil",
+			Order: &corepb.Order{
+				Id:              &testID,
+				RegistrationID:  &testID,
+				Expires:         &testExpires,
+				Authorizations:  []string{},
+				Names:           []string{},
+				BeganProcessing: &falseBool,
+			},
+			ExpectedValid: true,
+		},
+		{
+			Name:  "All nil",
+			Order: &corepb.Order{},
+		},
+		{
+			Name: "ID nil",
+			Order: &corepb.Order{
+				RegistrationID:    &testID,
+				Expires:           &testExpires,
+				CertificateSerial: &emptyString,
+				Authorizations:    []string{},
+				Names:             []string{},
+				BeganProcessing:   &falseBool,
+			},
+		},
+		{
+			Name: "Reg ID nil",
+			Order: &corepb.Order{
+				Id:                &testID,
+				Expires:           &testExpires,
+				CertificateSerial: &emptyString,
+				Authorizations:    []string{},
+				Names:             []string{},
+				BeganProcessing:   &falseBool,
+			},
+		},
+		{
+			Name: "Expires nil",
+			Order: &corepb.Order{
+				Id:                &testID,
+				RegistrationID:    &testID,
+				CertificateSerial: &emptyString,
+				Authorizations:    []string{},
+				Names:             []string{},
+				BeganProcessing:   &falseBool,
+			},
+		},
+		{
+			Name: "Authorizations nil",
+			Order: &corepb.Order{
+				Id:                &testID,
+				RegistrationID:    &testID,
+				Expires:           &testExpires,
+				CertificateSerial: &emptyString,
+				Names:             []string{},
+				BeganProcessing:   &falseBool,
+			},
+		},
+		{
+			Name: "BeganProcessing nil",
+			Order: &corepb.Order{
+				Id:                &testID,
+				RegistrationID:    &testID,
+				Expires:           &testExpires,
+				CertificateSerial: &emptyString,
+				Authorizations:    []string{},
+				Names:             []string{},
+			},
+		},
+		{
+			Name: "Names nil",
+			Order: &corepb.Order{
+				Id:                &testID,
+				RegistrationID:    &testID,
+				Expires:           &testExpires,
+				CertificateSerial: &emptyString,
+				Authorizations:    []string{},
+				BeganProcessing:   &falseBool,
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.Name, func(t *testing.T) {
+			result := orderValid(tc.Order)
+			test.AssertEquals(t, result, tc.ExpectedValid)
+		})
+	}
 }

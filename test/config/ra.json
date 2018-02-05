@@ -6,11 +6,12 @@
     "dnsTries": 3,
     "debugAddr": ":8002",
     "hostnamePolicyFile": "test/hostname-policy.json",
-    "maxNames": 1000,
+    "maxNames": 100,
     "doNotForceCN": true,
     "reuseValidAuthz": true,
-    "authorizationLifetimeDays": 60,
+    "authorizationLifetimeDays": 30,
     "pendingAuthorizationLifetimeDays": 7,
+    "weakKeyDirectory": "test/example-weak-keys.json",
     "tls": {
       "caCertFile": "test/grpc-creds/minica.pem",
       "certFile": "test/grpc-creds/ra.boulder/cert.pem",
@@ -18,7 +19,7 @@
     },
     "vaService": {
       "serverAddresses": ["va.boulder:19092"],
-      "timeout": "15s"
+      "timeout": "20s"
     },
     "caService": {
       "serverAddresses": ["ca.boulder:19093"],
@@ -26,7 +27,7 @@
     },
     "publisherService": {
       "serverAddresses": ["publisher.boulder:19091"],
-      "timeout": "15s"
+      "timeout": "300s"
     },
     "saService": {
       "serverAddresses": ["sa.boulder:19095"],
@@ -38,14 +39,12 @@
         "wfe.boulder",
         "admin-revoker.boulder"
       ]
+    },
+    "features": {
+      "CountCertificatesExact": true,
+      "ReusePendingAuthz": false,
+      "EnforceChallengeDisable": true
     }
-  },
-
-  "allowedSigningAlgos": {
-    "rsa": true,
-    "ecdsanistp256": true,
-    "ecdsanistp384": true,
-    "ecdsanistp521": false
   },
 
   "pa": {
@@ -53,16 +52,13 @@
       "http-01": true,
       "tls-sni-01": true,
       "dns-01": true
-    }
-  },
-
-  "statsd": {
-    "server": "localhost:8125",
-    "prefix": "Boulder"
+    },
+    "challengesWhitelistFile": "test/challenges-whitelist.json"
   },
 
   "syslog": {
-    "stdoutlevel": 6
+    "stdoutlevel": 6,
+    "sysloglevel": 4
   },
 
   "common": {
