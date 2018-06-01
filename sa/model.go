@@ -310,6 +310,7 @@ type orderModel struct {
 	ID                int64
 	RegistrationID    int64
 	Expires           time.Time
+	Created           time.Time
 	Error             []byte
 	CertificateSerial string
 	BeganProcessing   bool
@@ -326,14 +327,49 @@ type orderToAuthzModel struct {
 	AuthzID string
 }
 
-func modelToOrder(om *orderModel) *corepb.Order {
+func orderToModel(order *corepb.Order) (*orderModel, error) {
+	om := &orderModel{
+		ID:              *order.Id,
+		RegistrationID:  *order.RegistrationID,
+		Expires:         time.Unix(0, *order.Expires),
+		Created:         time.Unix(0, *order.Created),
+		BeganProcessing: *order.BeganProcessing,
+	}
+	if order.CertificateSerial != nil {
+		om.CertificateSerial = *order.CertificateSerial
+	}
+
+	if order.Error != nil {
+		errJSON, err := json.Marshal(order.Error)
+		if err != nil {
+			return nil, err
+		}
+		if len(errJSON) > mediumBlobSize {
+			return nil, fmt.Errorf("Error object is too large to store in the database")
+		}
+		om.Error = errJSON
+	}
+	return om, nil
+}
+
+func modelToOrder(om *orderModel) (*corepb.Order, error) {
 	expires := om.Expires.UnixNano()
-	return &corepb.Order{
+	created := om.Created.UnixNano()
+	order := &corepb.Order{
 		Id:                &om.ID,
 		RegistrationID:    &om.RegistrationID,
 		Expires:           &expires,
-		Error:             om.Error,
+		Created:           &created,
 		CertificateSerial: &om.CertificateSerial,
 		BeganProcessing:   &om.BeganProcessing,
 	}
+	if len(om.Error) > 0 {
+		var problem corepb.ProblemDetails
+		err := json.Unmarshal(om.Error, &problem)
+		if err != nil {
+			return &corepb.Order{}, err
+		}
+		order.Error = &problem
+	}
+	return order, nil
 }

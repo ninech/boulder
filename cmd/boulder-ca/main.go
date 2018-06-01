@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto"
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"flag"
@@ -12,7 +11,6 @@ import (
 
 	"github.com/cloudflare/cfssl/helpers"
 	"github.com/letsencrypt/pkcs11key"
-	"google.golang.org/grpc"
 
 	"github.com/letsencrypt/boulder/ca"
 	"github.com/letsencrypt/boulder/ca/config"
@@ -107,6 +105,9 @@ func loadSigner(issuerConfig ca_config.IssuerConfig) (crypto.Signer, error) {
 }
 
 func main() {
+	caAddr := flag.String("ca-addr", "", "CA gRPC listen address override")
+	ocspAddr := flag.String("ocsp-addr", "", "OCSP gRPC listen address override")
+	debugAddr := flag.String("debug-addr", "", "Debug server address override")
 	configFile := flag.String("config", "", "File path to the configuration file for this service")
 	flag.Parse()
 	if *configFile == "" {
@@ -120,6 +121,20 @@ func main() {
 
 	err = features.Set(c.CA.Features)
 	cmd.FailOnError(err, "Failed to set feature flags")
+
+	if *caAddr != "" {
+		c.CA.GRPCCA.Address = *caAddr
+	}
+	if *ocspAddr != "" {
+		c.CA.GRPCOCSPGenerator.Address = *ocspAddr
+	}
+	if *debugAddr != "" {
+		c.CA.DebugAddr = *debugAddr
+	}
+
+	if c.CA.MaxNames == 0 {
+		cmd.Fail(fmt.Sprintf("Error in CA config: MaxNames must not be 0"))
+	}
 
 	scope, logger := cmd.StatsAndLogging(c.Syslog, c.CA.DebugAddr)
 	defer logger.AuditPanic()
@@ -142,14 +157,13 @@ func main() {
 	kp, err := goodkey.NewKeyPolicy(c.CA.WeakKeyFile)
 	cmd.FailOnError(err, "Unable to create key policy")
 
-	var tls *tls.Config
-	if c.CA.TLS.CertFile != nil {
-		tls, err = c.CA.TLS.Load()
-		cmd.FailOnError(err, "TLS config")
-	}
+	tlsConfig, err := c.CA.TLS.Load()
+	cmd.FailOnError(err, "TLS config")
+
+	clk := cmd.Clock()
 
 	clientMetrics := bgrpc.NewClientMetrics(scope)
-	conn, err := bgrpc.ClientSetup(c.CA.SAService, tls, clientMetrics)
+	conn, err := bgrpc.ClientSetup(c.CA.SAService, tlsConfig, clientMetrics, clk)
 	cmd.FailOnError(err, "Failed to load credentials and create gRPC connection to SA")
 	sa := bgrpc.NewStorageAuthorityClient(sapb.NewStorageAuthorityClient(conn))
 
@@ -157,7 +171,7 @@ func main() {
 		c.CA,
 		sa,
 		pa,
-		cmd.Clock(),
+		clk,
 		scope,
 		issuers,
 		kp,
@@ -165,38 +179,26 @@ func main() {
 	cmd.FailOnError(err, "Failed to create CA impl")
 
 	serverMetrics := bgrpc.NewServerMetrics(scope)
-	var caSrv *grpc.Server
-	if c.CA.GRPCCA != nil {
-		s, l, err := bgrpc.NewServer(c.CA.GRPCCA, tls, serverMetrics)
-		cmd.FailOnError(err, "Unable to setup CA gRPC server")
-		caWrapper := bgrpc.NewCertificateAuthorityServer(cai)
-		caPB.RegisterCertificateAuthorityServer(s, caWrapper)
-		go func() {
-			err = cmd.FilterShutdownErrors(s.Serve(l))
-			cmd.FailOnError(err, "CA gRPC service failed")
-		}()
-		caSrv = s
-	}
-	var ocspSrv *grpc.Server
-	if c.CA.GRPCOCSPGenerator != nil {
-		s, l, err := bgrpc.NewServer(c.CA.GRPCOCSPGenerator, tls, serverMetrics)
-		cmd.FailOnError(err, "Unable to setup CA gRPC server")
-		caWrapper := bgrpc.NewCertificateAuthorityServer(cai)
-		caPB.RegisterOCSPGeneratorServer(s, caWrapper)
-		go func() {
-			err = cmd.FilterShutdownErrors(s.Serve(l))
-			cmd.FailOnError(err, "OCSPGenerator gRPC service failed")
-		}()
-		ocspSrv = s
-	}
+	caSrv, caListener, err := bgrpc.NewServer(c.CA.GRPCCA, tlsConfig, serverMetrics, clk)
+	cmd.FailOnError(err, "Unable to setup CA gRPC server")
+	caWrapper := bgrpc.NewCertificateAuthorityServer(cai)
+	caPB.RegisterCertificateAuthorityServer(caSrv, caWrapper)
+	go func() {
+		cmd.FailOnError(cmd.FilterShutdownErrors(caSrv.Serve(caListener)), "CA gRPC service failed")
+	}()
+
+	ocspSrv, ocspListener, err := bgrpc.NewServer(c.CA.GRPCOCSPGenerator, tlsConfig, serverMetrics, clk)
+	cmd.FailOnError(err, "Unable to setup CA gRPC server")
+	ocspWrapper := bgrpc.NewCertificateAuthorityServer(cai)
+	caPB.RegisterOCSPGeneratorServer(ocspSrv, ocspWrapper)
+	go func() {
+		cmd.FailOnError(cmd.FilterShutdownErrors(ocspSrv.Serve(ocspListener)),
+			"OCSPGenerator gRPC service failed")
+	}()
 
 	go cmd.CatchSignals(logger, func() {
-		if caSrv != nil {
-			caSrv.GracefulStop()
-		}
-		if ocspSrv != nil {
-			ocspSrv.GracefulStop()
-		}
+		caSrv.GracefulStop()
+		ocspSrv.GracefulStop()
 	})
 
 	select {}

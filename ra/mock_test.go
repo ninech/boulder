@@ -44,10 +44,6 @@ func (sa *mockInvalidAuthorizationsAuthority) GetCertificateStatus(ctx context.C
 	return nil, nil
 }
 
-func (sa *mockInvalidAuthorizationsAuthority) CountCertificatesRange(ctx context.Context, in *sapb.Range, opts ...grpc.CallOption) (*sapb.Count, error) {
-	return nil, nil
-}
-
 func (sa *mockInvalidAuthorizationsAuthority) CountCertificatesByNames(ctx context.Context, in *sapb.CountCertificatesByNamesRequest, opts ...grpc.CallOption) (*sapb.CountByNames, error) {
 	return nil, nil
 }
@@ -70,7 +66,7 @@ func (sa *mockInvalidAuthorizationsAuthority) CountPendingAuthorizations(ctx con
 	}, nil
 }
 
-func (sa *mockInvalidAuthorizationsAuthority) CountPendingOrders(ctx context.Context, in *sapb.RegistrationID, opts ...grpc.CallOption) (*sapb.Count, error) {
+func (sa *mockInvalidAuthorizationsAuthority) CountOrders(ctx context.Context, in *sapb.CountOrdersRequest, opts ...grpc.CallOption) (*sapb.Count, error) {
 	return &sapb.Count{
 		Count: new(int64),
 	}, nil
@@ -170,11 +166,15 @@ func (sa *mockInvalidAuthorizationsAuthority) AddPendingAuthorizations(ctx conte
 	return nil, nil
 }
 
-func (sa *mockInvalidAuthorizationsAuthority) GetOrderAuthorizations(ctx context.Context, in *sapb.GetOrderAuthorizationsRequest, opts ...grpc.CallOption) (*sapb.Authorizations, error) {
+func (sa *mockInvalidAuthorizationsAuthority) GetValidOrderAuthorizations(_ context.Context, _ *sapb.GetValidOrderAuthorizationsRequest, opts ...grpc.CallOption) (*sapb.Authorizations, error) {
 	return nil, nil
 }
 
 func (sa *mockInvalidAuthorizationsAuthority) SetOrderProcessing(ctx context.Context, in *core.Order, opts ...grpc.CallOption) (*core.Empty, error) {
+	return nil, nil
+}
+
+func (sa *mockInvalidAuthorizationsAuthority) SetOrderError(ctx context.Context, in *core.Order, opts ...grpc.CallOption) (*core.Empty, error) {
 	return nil, nil
 }
 

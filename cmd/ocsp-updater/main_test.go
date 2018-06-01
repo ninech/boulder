@@ -21,6 +21,7 @@ import (
 	blog "github.com/letsencrypt/boulder/log"
 	"github.com/letsencrypt/boulder/metrics"
 	"github.com/letsencrypt/boulder/publisher/mock_publisher"
+	pubpb "github.com/letsencrypt/boulder/publisher/proto"
 	"github.com/letsencrypt/boulder/revocation"
 	"github.com/letsencrypt/boulder/sa"
 	"github.com/letsencrypt/boulder/sa/satest"
@@ -109,6 +110,10 @@ func (p *mockPub) SubmitToSingleCT(_ context.Context, _, logPublicKey string, _ 
 	return err
 }
 
+func (p *mockPub) SubmitToSingleCTWithResult(_ context.Context, _ *pubpb.Request) (*pubpb.Result, error) {
+	return nil, nil
+}
+
 var log = blog.UseMock()
 
 const (
@@ -175,13 +180,14 @@ func setup(t *testing.T) (*OCSPUpdater, core.StorageAuthority, *gorp.DbMap, cloc
 }
 
 func TestGenerateAndStoreOCSPResponse(t *testing.T) {
-	updater, sa, _, _, cleanUp := setup(t)
+	updater, sa, _, fc, cleanUp := setup(t)
 	defer cleanUp()
 
 	reg := satest.CreateWorkingRegistration(t, sa)
 	parsedCert, err := core.LoadCert("test-cert.pem")
 	test.AssertNotError(t, err, "Couldn't read test certificate")
-	_, err = sa.AddCertificate(ctx, parsedCert.Raw, reg.ID, nil)
+	issued := fc.Now()
+	_, err = sa.AddCertificate(ctx, parsedCert.Raw, reg.ID, nil, &issued)
 	test.AssertNotError(t, err, "Couldn't add test-cert.pem")
 
 	status, err := sa.GetCertificateStatus(ctx, core.SerialToString(parsedCert.SerialNumber))
@@ -209,11 +215,12 @@ func TestGenerateOCSPResponses(t *testing.T) {
 	reg := satest.CreateWorkingRegistration(t, sa)
 	parsedCertA, err := core.LoadCert("test-cert.pem")
 	test.AssertNotError(t, err, "Couldn't read test certificate")
-	_, err = sa.AddCertificate(ctx, parsedCertA.Raw, reg.ID, nil)
+	issued := fc.Now()
+	_, err = sa.AddCertificate(ctx, parsedCertA.Raw, reg.ID, nil, &issued)
 	test.AssertNotError(t, err, "Couldn't add test-cert.pem")
 	parsedCertB, err := core.LoadCert("test-cert-b.pem")
 	test.AssertNotError(t, err, "Couldn't read test certificate")
-	_, err = sa.AddCertificate(ctx, parsedCertB.Raw, reg.ID, nil)
+	_, err = sa.AddCertificate(ctx, parsedCertB.Raw, reg.ID, nil, &issued)
 	test.AssertNotError(t, err, "Couldn't add test-cert-b.pem")
 
 	// We need to set a fake "ocspLastUpdated" value for the two certs we created
@@ -258,7 +265,8 @@ func TestFindStaleOCSPResponses(t *testing.T) {
 	reg := satest.CreateWorkingRegistration(t, sa)
 	parsedCert, err := core.LoadCert("test-cert.pem")
 	test.AssertNotError(t, err, "Couldn't read test certificate")
-	_, err = sa.AddCertificate(ctx, parsedCert.Raw, reg.ID, nil)
+	issued := fc.Now()
+	_, err = sa.AddCertificate(ctx, parsedCert.Raw, reg.ID, nil, &issued)
 	test.AssertNotError(t, err, "Couldn't add test-cert.pem")
 
 	// We need to set a fake "ocspLastUpdated" value for the cert we created
@@ -295,11 +303,12 @@ func TestFindStaleOCSPResponsesStaleMaxAge(t *testing.T) {
 	reg := satest.CreateWorkingRegistration(t, sa)
 	parsedCertA, err := core.LoadCert("test-cert.pem")
 	test.AssertNotError(t, err, "Couldn't read test certificate")
-	_, err = sa.AddCertificate(ctx, parsedCertA.Raw, reg.ID, nil)
+	issued := fc.Now()
+	_, err = sa.AddCertificate(ctx, parsedCertA.Raw, reg.ID, nil, &issued)
 	test.AssertNotError(t, err, "Couldn't add test-cert.pem")
 	parsedCertB, err := core.LoadCert("test-cert-b.pem")
 	test.AssertNotError(t, err, "Couldn't read test certificate")
-	_, err = sa.AddCertificate(ctx, parsedCertB.Raw, reg.ID, nil)
+	_, err = sa.AddCertificate(ctx, parsedCertB.Raw, reg.ID, nil, &issued)
 	test.AssertNotError(t, err, "Couldn't add test-cert-b.pem")
 
 	// Set a "ocspLastUpdated" value of 3 days ago for parsedCertA
@@ -329,13 +338,14 @@ func TestFindStaleOCSPResponsesStaleMaxAge(t *testing.T) {
 }
 
 func TestGetCertificatesWithMissingResponses(t *testing.T) {
-	updater, sa, _, _, cleanUp := setup(t)
+	updater, sa, _, fc, cleanUp := setup(t)
 	defer cleanUp()
 
 	reg := satest.CreateWorkingRegistration(t, sa)
 	cert, err := core.LoadCert("test-cert.pem")
 	test.AssertNotError(t, err, "Couldn't read test certificate")
-	_, err = sa.AddCertificate(ctx, cert.Raw, reg.ID, nil)
+	issued := fc.Now()
+	_, err = sa.AddCertificate(ctx, cert.Raw, reg.ID, nil, &issued)
 	test.AssertNotError(t, err, "Couldn't add test-cert.pem")
 
 	statuses, err := updater.getCertificatesWithMissingResponses(10)
@@ -344,13 +354,14 @@ func TestGetCertificatesWithMissingResponses(t *testing.T) {
 }
 
 func TestFindRevokedCertificatesToUpdate(t *testing.T) {
-	updater, sa, _, _, cleanUp := setup(t)
+	updater, sa, _, fc, cleanUp := setup(t)
 	defer cleanUp()
 
 	reg := satest.CreateWorkingRegistration(t, sa)
 	cert, err := core.LoadCert("test-cert.pem")
 	test.AssertNotError(t, err, "Couldn't read test certificate")
-	_, err = sa.AddCertificate(ctx, cert.Raw, reg.ID, nil)
+	issued := fc.Now()
+	_, err = sa.AddCertificate(ctx, cert.Raw, reg.ID, nil, &issued)
 	test.AssertNotError(t, err, "Couldn't add test-cert.pem")
 
 	statuses, err := updater.findRevokedCertificatesToUpdate(10)
@@ -372,7 +383,8 @@ func TestNewCertificateTick(t *testing.T) {
 	reg := satest.CreateWorkingRegistration(t, sa)
 	parsedCert, err := core.LoadCert("test-cert.pem")
 	test.AssertNotError(t, err, "Couldn't read test certificate")
-	_, err = sa.AddCertificate(ctx, parsedCert.Raw, reg.ID, nil)
+	issued := fc.Now()
+	_, err = sa.AddCertificate(ctx, parsedCert.Raw, reg.ID, nil, &issued)
 	test.AssertNotError(t, err, "Couldn't add test-cert.pem")
 
 	prev := fc.Now().Add(-time.Hour)
@@ -391,7 +403,8 @@ func TestOldOCSPResponsesTick(t *testing.T) {
 	reg := satest.CreateWorkingRegistration(t, sa)
 	parsedCert, err := core.LoadCert("test-cert.pem")
 	test.AssertNotError(t, err, "Couldn't read test certificate")
-	_, err = sa.AddCertificate(ctx, parsedCert.Raw, reg.ID, nil)
+	issued := fc.Now()
+	_, err = sa.AddCertificate(ctx, parsedCert.Raw, reg.ID, nil, &issued)
 	test.AssertNotError(t, err, "Couldn't add test-cert.pem")
 
 	updater.ocspMinTimeToExpiry = 1 * time.Hour
@@ -423,7 +436,8 @@ func TestOldOCSPResponsesTickIsExpired(t *testing.T) {
 	serial := core.SerialToString(parsedCert.SerialNumber)
 
 	// Add a new test certificate
-	_, err = sa.AddCertificate(ctx, parsedCert.Raw, reg.ID, nil)
+	issued := fc.Now()
+	_, err = sa.AddCertificate(ctx, parsedCert.Raw, reg.ID, nil, &issued)
 	test.AssertNotError(t, err, "Couldn't add test-cert.pem")
 
 	// We need to set a fake "ocspLastUpdated" value for the cert we created
@@ -466,7 +480,8 @@ func TestMissingReceiptsTick(t *testing.T) {
 	parsedCert, err := core.LoadCert("test-cert.pem")
 	test.AssertNotError(t, err, "Couldn't read test certificate")
 	fc.Set(parsedCert.NotBefore.Add(time.Minute))
-	_, err = sa.AddCertificate(ctx, parsedCert.Raw, reg.ID, nil)
+	issued := fc.Now()
+	_, err = sa.AddCertificate(ctx, parsedCert.Raw, reg.ID, nil, &issued)
 	test.AssertNotError(t, err, "Couldn't add test-cert.pem")
 
 	updater.oldestIssuedSCT = 2 * time.Hour
@@ -507,7 +522,8 @@ func TestMissingOnlyReceiptsTick(t *testing.T) {
 	parsedCert, err := core.LoadCert("test-cert.pem")
 	test.AssertNotError(t, err, "Couldn't read test certificate")
 	fc.Set(parsedCert.NotBefore.Add(time.Minute))
-	_, err = sa.AddCertificate(ctx, parsedCert.Raw, reg.ID, nil)
+	issued := fc.Now()
+	_, err = sa.AddCertificate(ctx, parsedCert.Raw, reg.ID, nil, &issued)
 	test.AssertNotError(t, err, "Couldn't add test-cert.pem")
 
 	updater.oldestIssuedSCT = 2 * time.Hour
@@ -594,13 +610,14 @@ func TestMissingReceiptsTickTerminate(t *testing.T) {
 }
 
 func TestRevokedCertificatesTick(t *testing.T) {
-	updater, sa, _, _, cleanUp := setup(t)
+	updater, sa, _, fc, cleanUp := setup(t)
 	defer cleanUp()
 
 	reg := satest.CreateWorkingRegistration(t, sa)
 	parsedCert, err := core.LoadCert("test-cert.pem")
 	test.AssertNotError(t, err, "Couldn't read test certificate")
-	_, err = sa.AddCertificate(ctx, parsedCert.Raw, reg.ID, nil)
+	issued := fc.Now()
+	_, err = sa.AddCertificate(ctx, parsedCert.Raw, reg.ID, nil, &issued)
 	test.AssertNotError(t, err, "Couldn't add test-cert.pem")
 
 	err = sa.MarkCertificateRevoked(ctx, core.SerialToString(parsedCert.SerialNumber), revocation.KeyCompromise)
@@ -620,13 +637,14 @@ func TestRevokedCertificatesTick(t *testing.T) {
 }
 
 func TestStoreResponseGuard(t *testing.T) {
-	updater, sa, _, _, cleanUp := setup(t)
+	updater, sa, _, fc, cleanUp := setup(t)
 	defer cleanUp()
 
 	reg := satest.CreateWorkingRegistration(t, sa)
 	parsedCert, err := core.LoadCert("test-cert.pem")
 	test.AssertNotError(t, err, "Couldn't read test certificate")
-	_, err = sa.AddCertificate(ctx, parsedCert.Raw, reg.ID, nil)
+	issued := fc.Now()
+	_, err = sa.AddCertificate(ctx, parsedCert.Raw, reg.ID, nil, &issued)
 	test.AssertNotError(t, err, "Couldn't add test-cert.pem")
 
 	status, err := sa.GetCertificateStatus(ctx, core.SerialToString(parsedCert.SerialNumber))
@@ -668,27 +686,30 @@ func TestLoopTickBackoff(t *testing.T) {
 		tickFunc:             func(context.Context, int) error { return errors.New("baddie") },
 	}
 
+	assertBetween := func(a, b, c int64) {
+		t.Helper()
+		if a < b || a > c {
+			t.Fatalf("%d is not between %d and %d", a, b, c)
+		}
+	}
 	start := l.clk.Now()
 	l.tick()
 	// Expected to sleep for 1m
 	backoff := float64(60000000000)
-	maxJittered := backoff * 1.2
-	test.AssertBetween(t, l.clk.Now().Sub(start).Nanoseconds(), int64(backoff), int64(maxJittered))
+	assertBetween(l.clk.Now().Sub(start).Nanoseconds(), int64(backoff*0.8), int64(backoff*1.2))
 
 	start = l.clk.Now()
 	l.tick()
 	// Expected to sleep for 1m30s
 	backoff = 90000000000
-	maxJittered = backoff * 1.2
-	test.AssertBetween(t, l.clk.Now().Sub(start).Nanoseconds(), int64(backoff), int64(maxJittered))
+	assertBetween(l.clk.Now().Sub(start).Nanoseconds(), int64(backoff*0.8), int64(backoff*1.2))
 
 	l.failures = 6
 	start = l.clk.Now()
 	l.tick()
 	// Expected to sleep for 11m23.4375s, should be truncated to 10m
 	backoff = 600000000000
-	maxJittered = backoff * 1.2
-	test.AssertBetween(t, l.clk.Now().Sub(start).Nanoseconds(), int64(backoff), int64(maxJittered))
+	assertBetween(l.clk.Now().Sub(start).Nanoseconds(), int64(backoff*0.8), int64(backoff*1.2))
 
 	l.tickFunc = func(context.Context, int) error { return nil }
 	start = l.clk.Now()
@@ -705,7 +726,8 @@ func TestGetSubmittedReceipts(t *testing.T) {
 	parsedCert, err := core.LoadCert("test-cert.pem")
 	test.AssertNotError(t, err, "Couldn't read test certificate")
 	fc.Set(parsedCert.NotBefore.Add(time.Minute))
-	_, err = sa.AddCertificate(ctx, parsedCert.Raw, reg.ID, nil)
+	issued := fc.Now()
+	_, err = sa.AddCertificate(ctx, parsedCert.Raw, reg.ID, nil, &issued)
 	test.AssertNotError(t, err, "Couldn't add test-cert.pem")
 
 	// Before adding any SCTs, there should be no receipts or errors for serial 00

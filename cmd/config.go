@@ -110,7 +110,10 @@ type TLSConfig struct {
 
 // Load reads and parses the certificates and key listed in the TLSConfig, and
 // returns a *tls.Config suitable for either client or server use.
-func (t TLSConfig) Load() (*tls.Config, error) {
+func (t *TLSConfig) Load() (*tls.Config, error) {
+	if t == nil {
+		return nil, fmt.Errorf("nil TLS section in config")
+	}
 	if t.CertFile == nil {
 		return nil, fmt.Errorf("nil CertFile in TLSConfig")
 	}
@@ -169,10 +172,14 @@ type OCSPUpdaterConfig struct {
 	OldestIssuedSCT              ConfigDuration
 	ParallelGenerateOCSPRequests int
 
-	AkamaiBaseURL           string
-	AkamaiClientToken       string
-	AkamaiClientSecret      string
-	AkamaiAccessToken       string
+	AkamaiBaseURL      string
+	AkamaiClientToken  string
+	AkamaiClientSecret string
+	AkamaiAccessToken  string
+	// When AkamaiV3Network is not provided, the Akamai CCU API v2 is used. When
+	// AkamaiV3Network is set to "staging" or "production" the Akamai CCU API v3
+	// is used.
+	AkamaiV3Network         string
 	AkamaiPurgeRetries      int
 	AkamaiPurgeRetryBackoff ConfigDuration
 
@@ -257,8 +264,9 @@ func (d *ConfigDuration) UnmarshalYAML(unmarshal func(interface{}) error) error 
 // LogDescription contains the information needed to submit certificates
 // to a CT log and verify returned receipts
 type LogDescription struct {
-	URI string
-	Key string
+	URI             string
+	Key             string
+	SubmitFinalCert bool
 }
 
 // GRPCClientConfig contains the information needed to talk to the gRPC service
@@ -274,6 +282,12 @@ type GRPCServerConfig struct {
 	// (SANs). The server will reject clients that do not present a certificate
 	// with a SAN present on the `ClientNames` list.
 	ClientNames []string `json:"clientNames"`
+	// gRPC multiplexes RPCs across HTTP/2 streams in a single TCP connection.
+	// HTTP/2 servers are allowed to set a limit on the number of streams a client
+	// will create. In Go by default that limit is 250. We can override that for
+	// our servers with this config value. In practice this is a limit on how many
+	// concurrent requests we can handle.
+	MaxConcurrentStreams int
 }
 
 // PortConfig specifies what ports the VA should call to on the remote
@@ -290,4 +304,9 @@ type CAADistributedResolverConfig struct {
 	Timeout     ConfigDuration
 	MaxFailures int
 	Proxies     []string
+}
+
+type CTGroup struct {
+	Name string
+	Logs []LogDescription
 }

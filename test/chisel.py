@@ -33,16 +33,17 @@ logger.setLevel(int(os.getenv('LOGLEVEL', 20)))
 
 DIRECTORY = os.getenv('DIRECTORY', 'http://localhost:4000/directory')
 
-# URLs to control dns-test-srv
+# URLs for management interface of challtestsrv
 SET_TXT = "http://localhost:8055/set-txt"
 CLEAR_TXT = "http://localhost:8055/clear-txt"
+
+os.environ.setdefault('REQUESTS_CA_BUNDLE', 'test/wfe-tls/minica.pem')
 
 def make_client(email=None):
     """Build an acme.Client and register a new account with a random key."""
     key = josepy.JWKRSA(key=rsa.generate_private_key(65537, 2048, default_backend()))
 
-    net = acme_client.ClientNetwork(key, verify_ssl=False,
-                                    user_agent="Boulder integration tester")
+    net = acme_client.ClientNetwork(key, user_agent="Boulder integration tester")
 
     client = acme_client.Client(DIRECTORY, key=key, net=net)
     account = client.register(messages.NewRegistration.from_data(email=email))
@@ -189,7 +190,7 @@ def do_http_challenges(client, authzs):
         thread.join()
     return cleanup
 
-def auth_and_issue(domains, chall_type="http-01", email=None, cert_output=None, client=None):
+def auth_and_issue(domains, chall_type="dns-01", email=None, cert_output=None, client=None):
     """Make authzs for each of the given domains, set up a server to answer the
        challenges in those authzs, tell the ACME server to validate the challenges,
        then poll for the authzs to be ready and issue a cert."""

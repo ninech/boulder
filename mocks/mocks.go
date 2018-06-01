@@ -17,6 +17,7 @@ import (
 	corepb "github.com/letsencrypt/boulder/core/proto"
 	berrors "github.com/letsencrypt/boulder/errors"
 	"github.com/letsencrypt/boulder/probs"
+	pubpb "github.com/letsencrypt/boulder/publisher/proto"
 	"github.com/letsencrypt/boulder/revocation"
 	sapb "github.com/letsencrypt/boulder/sa/proto"
 )
@@ -308,7 +309,7 @@ func (sa *StorageAuthority) GetCertificateStatus(_ context.Context, serial strin
 }
 
 // AddCertificate is a mock
-func (sa *StorageAuthority) AddCertificate(_ context.Context, certDER []byte, regID int64, _ []byte) (digest string, err error) {
+func (sa *StorageAuthority) AddCertificate(_ context.Context, certDER []byte, regID int64, _ []byte, _ *time.Time) (digest string, err error) {
 	return
 }
 
@@ -413,11 +414,6 @@ func (sa *StorageAuthority) GetValidAuthorizations(_ context.Context, regID int6
 	return nil, nil
 }
 
-// CountCertificatesRange is a mock
-func (sa *StorageAuthority) CountCertificatesRange(_ context.Context, _, _ time.Time) (int64, error) {
-	return 0, nil
-}
-
 // CountCertificatesByNames is a mock
 func (sa *StorageAuthority) CountCertificatesByNames(_ context.Context, _ []string, _, _ time.Time) (ret []*sapb.CountByNames_MapElement, err error) {
 	return
@@ -443,8 +439,8 @@ func (sa *StorageAuthority) CountPendingAuthorizations(_ context.Context, _ int6
 	return 0, nil
 }
 
-// CountPendingOrders is a mock
-func (sa *StorageAuthority) CountPendingOrders(_ context.Context, _ int64) (int, error) {
+// CountOrders is a mock
+func (sa *StorageAuthority) CountOrders(_ context.Context, _ int64, _, _ time.Time) (int, error) {
 	return 0, nil
 }
 
@@ -465,6 +461,11 @@ func (sa *StorageAuthority) NewOrder(_ context.Context, order *corepb.Order) (*c
 
 // SetOrderProcessing is a mock
 func (sa *StorageAuthority) SetOrderProcessing(_ context.Context, order *corepb.Order) error {
+	return nil
+}
+
+// SetOrderError is a mock
+func (sa *StorageAuthority) SetOrderError(_ context.Context, order *corepb.Order) error {
 	return nil
 }
 
@@ -493,7 +494,7 @@ func (sa *StorageAuthority) GetOrder(_ context.Context, req *sapb.OrderRequest) 
 		Status:            &status,
 		Authorizations:    []string{"hello"},
 		CertificateSerial: &serial,
-		Error:             []byte("error"),
+		Error:             nil,
 	}
 
 	// Order ID doesn't have a certificate serial yet
@@ -521,6 +522,11 @@ func (sa *StorageAuthority) GetOrder(_ context.Context, req *sapb.OrderRequest) 
 		validOrder.Expires = &exp
 	}
 
+	if *req.Id == 8 {
+		ready := string(core.StatusReady)
+		validOrder.Status = &ready
+	}
+
 	return validOrder, nil
 }
 
@@ -528,7 +534,7 @@ func (sa *StorageAuthority) GetOrderForNames(_ context.Context, _ *sapb.GetOrder
 	return nil, nil
 }
 
-func (sa *StorageAuthority) GetOrderAuthorizations(_ context.Context, req *sapb.GetOrderAuthorizationsRequest) (map[string]*core.Authorization, error) {
+func (sa *StorageAuthority) GetValidOrderAuthorizations(_ context.Context, _ *sapb.GetValidOrderAuthorizationsRequest) (map[string]*core.Authorization, error) {
 	return nil, nil
 }
 
@@ -560,6 +566,11 @@ func (*Publisher) SubmitToCT(_ context.Context, der []byte) error {
 // SubmitToSingleCT is a mock
 func (*Publisher) SubmitToSingleCT(_ context.Context, _, _ string, _ []byte) error {
 	return nil
+}
+
+// SubmitToSingleCTWithResult is a mock
+func (*Publisher) SubmitToSingleCTWithResult(_ context.Context, _ *pubpb.Request) (*pubpb.Result, error) {
+	return nil, nil
 }
 
 // Mailer is a mock

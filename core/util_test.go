@@ -6,6 +6,7 @@ import (
 	"math"
 	"math/big"
 	"sort"
+	"strings"
 	"testing"
 
 	"gopkg.in/square/go-jose.v2"
@@ -18,7 +19,9 @@ func TestNewToken(t *testing.T) {
 	token := NewToken()
 	fmt.Println(token)
 	tokenLength := int(math.Ceil(32 * 8 / 6.0)) // 32 bytes, b64 encoded
-	test.AssertIntEquals(t, len(token), tokenLength)
+	if len(token) != tokenLength {
+		t.Fatalf("Expected token of length %d, got %d", tokenLength, len(token))
+	}
 	collider := map[string]bool{}
 	// Test for very blatant RNG failures:
 	// Try 2^20 birthdays in a 2^72 search space...
@@ -43,7 +46,9 @@ func TestSerialUtils(t *testing.T) {
 
 	serialNum, err := StringToSerial("00000000000000000000016345785d8a0000")
 	test.AssertNotError(t, err, "Couldn't convert serial number to *big.Int")
-	test.AssertBigIntEquals(t, serialNum, big.NewInt(100000000000000000))
+	if serialNum.Cmp(big.NewInt(100000000000000000)) != 0 {
+		t.Fatalf("Incorrect conversion, got %d", serialNum)
+	}
 
 	badSerial, err := StringToSerial("doop!!!!000")
 	test.AssertEquals(t, fmt.Sprintf("%v", err), "Invalid serial number")
@@ -107,4 +112,16 @@ func TestUniqueLowerNames(t *testing.T) {
 	u := UniqueLowerNames([]string{"foobar.com", "fooBAR.com", "baz.com", "foobar.com", "bar.com", "bar.com", "a.com"})
 	sort.Strings(u)
 	test.AssertDeepEquals(t, []string{"a.com", "bar.com", "baz.com", "foobar.com"}, u)
+}
+
+func TestValidSerial(t *testing.T) {
+	notLength32Or36 := "A"
+	length32 := strings.Repeat("A", 32)
+	length36 := strings.Repeat("A", 36)
+	isValidSerial := ValidSerial(notLength32Or36)
+	test.AssertEquals(t, isValidSerial, false)
+	isValidSerial = ValidSerial(length32)
+	test.AssertEquals(t, isValidSerial, true)
+	isValidSerial = ValidSerial(length36)
+	test.AssertEquals(t, isValidSerial, true)
 }

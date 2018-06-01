@@ -1,24 +1,34 @@
 package publisher
 
 import (
+	"crypto/ecdsa"
+	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/asn1"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"math/big"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
 
-	ct "github.com/google/certificate-transparency-go"
+	"github.com/google/certificate-transparency-go"
 	ctClient "github.com/google/certificate-transparency-go/client"
 	"github.com/google/certificate-transparency-go/jsonclient"
+	"github.com/google/certificate-transparency-go/tls"
+	cttls "github.com/google/certificate-transparency-go/tls"
 	"github.com/prometheus/client_golang/prometheus"
 	"golang.org/x/net/context"
 
+	"github.com/letsencrypt/boulder/canceled"
 	"github.com/letsencrypt/boulder/core"
 	blog "github.com/letsencrypt/boulder/log"
 	"github.com/letsencrypt/boulder/metrics"
+	pubpb "github.com/letsencrypt/boulder/publisher/proto"
 )
 
 // Log contains the CT client and signature verifier for a particular CT log
@@ -74,7 +84,7 @@ type logAdaptor struct {
 }
 
 func (la logAdaptor) Printf(s string, args ...interface{}) {
-	la.Logger.Info(fmt.Sprintf(s, args...))
+	la.Logger.Infof(s, args...)
 }
 
 // NewLog returns an initialized Log struct
@@ -137,7 +147,7 @@ func initMetrics(stats metrics.Scope) *pubMetrics {
 		prometheus.HistogramOpts{
 			Name:    "ct_submission_time_seconds",
 			Help:    "Time taken to submit a certificate to a CT log",
-			Buckets: []float64{.1, .25, .5, 1, 2.5, 5, 7.5, 10, 15, 30, 45},
+			Buckets: metrics.InternetFacingBuckets,
 		},
 		[]string{"log", "status"},
 	)
@@ -185,46 +195,72 @@ func New(
 
 // SubmitToSingleCT will submit the certificate represented by certDER to the CT
 // log specified by log URL and public key (base64)
-func (pub *Impl) SubmitToSingleCT(
-	ctx context.Context,
-	logURL, logPublicKey string,
-	der []byte) error {
-	cert, err := x509.ParseCertificate(der)
+func (pub *Impl) SubmitToSingleCT(ctx context.Context, logURL, logPublicKey string, der []byte) error {
+	// NOTE(@roland): historically we've always thrown any errors away when
+	// using this method. In order to preserve this behaviour we just ignore
+	// any returns and return nil.
+	_, _ = pub.SubmitToSingleCTWithResult(ctx, &pubpb.Request{LogURL: &logURL, LogPublicKey: &logPublicKey, Der: der})
+	return nil
+}
+
+// SubmitToSingleCTWithResult will submit the certificate represented by certDER to the CT
+// log specified by log URL and public key (base64) and return the SCT to the caller
+func (pub *Impl) SubmitToSingleCTWithResult(ctx context.Context, req *pubpb.Request) (*pubpb.Result, error) {
+	cert, err := x509.ParseCertificate(req.Der)
 	if err != nil {
-		pub.log.AuditErr(fmt.Sprintf("Failed to parse certificate: %s", err))
-		return err
+		pub.log.AuditErrf("Failed to parse certificate: %s", err)
+		return nil, err
 	}
 
-	chain := append([]ct.ASN1Cert{ct.ASN1Cert{der}}, pub.issuerBundle...)
+	chain := append([]ct.ASN1Cert{ct.ASN1Cert{Data: req.Der}}, pub.issuerBundle...)
 
 	// Add a log URL/pubkey to the cache, if already present the
 	// existing *Log will be returned, otherwise one will be constructed, added
 	// and returned.
-	ctLog, err := pub.ctLogsCache.AddLog(logURL, logPublicKey, pub.log)
+	ctLog, err := pub.ctLogsCache.AddLog(*req.LogURL, *req.LogPublicKey, pub.log)
 	if err != nil {
-		pub.log.AuditErr(fmt.Sprintf("Making Log: %s", err))
-		return err
+		pub.log.AuditErrf("Making Log: %s", err)
+		return nil, err
 	}
 
-	start := time.Now()
-	err = pub.singleLogSubmit(
+	isPrecert := false
+	if req.Precert != nil {
+		isPrecert = *req.Precert
+	}
+
+	// Historically if a cert wasn't a precert we wanted to store the SCT,
+	// but for SCTs for final certificates generated from precerts we don't
+	// want to store those SCTs.
+	storeSCT := !isPrecert
+	if req.StoreSCT != nil {
+		storeSCT = *req.StoreSCT
+	}
+
+	sct, err := pub.singleLogSubmit(
 		ctx,
 		chain,
+		isPrecert,
+		storeSCT,
 		core.SerialToString(cert.SerialNumber),
 		ctLog)
-	took := time.Since(start).Seconds()
-	status := "success"
 	if err != nil {
-		pub.log.AuditErr(
-			fmt.Sprintf("Failed to submit certificate to CT log at %s: %s", ctLog.uri, err))
-		status = "error"
+		if canceled.Is(err) {
+			return nil, err
+		}
+		var body string
+		if respErr, ok := err.(ctClient.RspError); ok && respErr.StatusCode < 500 {
+			body = string(respErr.Body)
+		}
+		pub.log.AuditErrf("Failed to submit certificate to CT log at %s: %s Body=%q",
+			ctLog.uri, err, body)
+		return nil, err
 	}
-	pub.metrics.submissionLatency.With(prometheus.Labels{
-		"log":    ctLog.uri,
-		"status": status,
-	}).Observe(took)
 
-	return nil
+	sctBytes, err := tls.Marshal(*sct)
+	if err != nil {
+		return nil, err
+	}
+	return &pubpb.Result{Sct: sctBytes}, nil
 }
 
 // SubmitToCT will submit the certificate represented by certDER to any CT
@@ -250,32 +286,68 @@ func (pub *Impl) SubmitToCT(ctx context.Context, der []byte) error {
 func (pub *Impl) singleLogSubmit(
 	ctx context.Context,
 	chain []ct.ASN1Cert,
+	isPrecert bool,
+	storeSCT bool,
 	serial string,
-	ctLog *Log) error {
-
-	sct, err := ctLog.client.AddChain(ctx, chain)
-	if err != nil {
-		return err
+	ctLog *Log,
+) (*ct.SignedCertificateTimestamp, error) {
+	var submissionMethod func(context.Context, []ct.ASN1Cert) (*ct.SignedCertificateTimestamp, error)
+	submissionMethod = ctLog.client.AddChain
+	if isPrecert {
+		submissionMethod = ctLog.client.AddPreChain
 	}
 
-	err = ctLog.verifier.VerifySCTSignature(*sct, ct.LogEntry{
-		Leaf: ct.MerkleTreeLeaf{
-			LeafType: ct.TimestampedEntryLeafType,
-			TimestampedEntry: &ct.TimestampedEntry{
-				X509Entry: &chain[0],
-				EntryType: ct.X509LogEntryType,
-			},
-		},
-	})
+	start := time.Now()
+	sct, err := submissionMethod(ctx, chain)
+	took := time.Since(start).Seconds()
 	if err != nil {
-		return err
+		status := "error"
+		if canceled.Is(err) {
+			status = "canceled"
+		}
+		pub.metrics.submissionLatency.With(prometheus.Labels{
+			"log":    ctLog.uri,
+			"status": status,
+		}).Observe(took)
+		return nil, err
+	}
+	pub.metrics.submissionLatency.With(prometheus.Labels{
+		"log":    ctLog.uri,
+		"status": "success",
+	}).Observe(took)
+
+	// Generate log entry so we can verify the signature in the returned SCT
+	eType := ct.X509LogEntryType
+	if isPrecert {
+		eType = ct.PrecertLogEntryType
+	}
+	// Note: The timestamp on the merkle tree leaf is not actually used in
+	// the SCT signature validation so it is left as 0 here
+	leaf, err := ct.MerkleTreeLeafFromRawChain(chain, eType, 0)
+	if err != nil {
+		return nil, err
+	}
+	err = ctLog.verifier.VerifySCTSignature(*sct, ct.LogEntry{Leaf: *leaf})
+	if err != nil {
+		return nil, err
+	}
+	timestamp := time.Unix(int64(sct.Timestamp)/1000, 0)
+	if timestamp.Sub(time.Now()) > time.Minute {
+		return nil, fmt.Errorf("SCT Timestamp was too far in the future (%s)", timestamp)
+	}
+	// For regular certificates, we could get an old SCT, but that shouldn't
+	// happen for precertificates.
+	if isPrecert && timestamp.Sub(time.Now()) < -10*time.Minute {
+		return nil, fmt.Errorf("SCT Timestamp was too far in the past (%s)", timestamp)
 	}
 
-	err = pub.sa.AddSCTReceipt(ctx, sctToInternal(sct, serial))
-	if err != nil {
-		return err
+	if storeSCT {
+		err = pub.sa.AddSCTReceipt(ctx, sctToInternal(sct, serial))
+		if err != nil {
+			return nil, err
+		}
 	}
-	return nil
+	return sct, nil
 }
 
 func sctToInternal(sct *ct.SignedCertificateTimestamp, serial string) core.SignedCertificateTimestamp {
@@ -287,4 +359,68 @@ func sctToInternal(sct *ct.SignedCertificateTimestamp, serial string) core.Signe
 		Extensions:        sct.Extensions,
 		Signature:         sct.Signature.Signature,
 	}
+}
+
+// CreateTestingSignedSCT is used by both the publisher tests and ct-test-serv, which is
+// why it is exported. It creates a signed SCT based on the provided chain.
+func CreateTestingSignedSCT(req []string, k *ecdsa.PrivateKey, precert bool, timestamp time.Time) []byte {
+	chain := make([]ct.ASN1Cert, len(req))
+	for i, str := range req {
+		b, err := base64.StdEncoding.DecodeString(str)
+		if err != nil {
+			panic("cannot decode chain")
+		}
+		chain[i] = ct.ASN1Cert{Data: b}
+	}
+
+	// Generate the internal leaf entry for the SCT
+	etype := ct.X509LogEntryType
+	if precert {
+		etype = ct.PrecertLogEntryType
+	}
+	leaf, err := ct.MerkleTreeLeafFromRawChain(chain, etype, 0)
+	if err != nil {
+		panic(fmt.Sprintf("failed to create leaf: %s", err))
+	}
+
+	// Sign the SCT
+	rawKey, _ := x509.MarshalPKIXPublicKey(&k.PublicKey)
+	logID := sha256.Sum256(rawKey)
+	timestampMillis := uint64(timestamp.UnixNano()) / 1e6
+	serialized, _ := ct.SerializeSCTSignatureInput(ct.SignedCertificateTimestamp{
+		SCTVersion: ct.V1,
+		LogID:      ct.LogID{KeyID: logID},
+		Timestamp:  timestampMillis,
+	}, ct.LogEntry{Leaf: *leaf})
+	hashed := sha256.Sum256(serialized)
+	var ecdsaSig struct {
+		R, S *big.Int
+	}
+	ecdsaSig.R, ecdsaSig.S, _ = ecdsa.Sign(rand.Reader, k, hashed[:])
+	sig, _ := asn1.Marshal(ecdsaSig)
+
+	// The ct.SignedCertificateTimestamp object doesn't have the needed
+	// `json` tags to properly marshal so we need to transform in into
+	// a struct that does before we can send it off
+	var jsonSCTObj struct {
+		SCTVersion ct.Version `json:"sct_version"`
+		ID         string     `json:"id"`
+		Timestamp  uint64     `json:"timestamp"`
+		Extensions string     `json:"extensions"`
+		Signature  string     `json:"signature"`
+	}
+	jsonSCTObj.SCTVersion = ct.V1
+	jsonSCTObj.ID = base64.StdEncoding.EncodeToString(logID[:])
+	jsonSCTObj.Timestamp = timestampMillis
+	ds := ct.DigitallySigned{
+		Algorithm: cttls.SignatureAndHashAlgorithm{
+			Hash:      cttls.SHA256,
+			Signature: cttls.ECDSA,
+		},
+		Signature: sig,
+	}
+	jsonSCTObj.Signature, _ = ds.Base64String()
+
+	jsonSCT, _ := json.Marshal(jsonSCTObj)
+	return jsonSCT
 }

@@ -7,30 +7,30 @@
     "debugAddr": ":8002",
     "hostnamePolicyFile": "test/hostname-policy.json",
     "maxNames": 100,
-    "doNotForceCN": true,
     "reuseValidAuthz": true,
     "authorizationLifetimeDays": 30,
     "pendingAuthorizationLifetimeDays": 7,
     "weakKeyDirectory": "test/example-weak-keys.json",
+    "orderLifetime": "168h",
     "tls": {
       "caCertFile": "test/grpc-creds/minica.pem",
       "certFile": "test/grpc-creds/ra.boulder/cert.pem",
       "keyFile": "test/grpc-creds/ra.boulder/key.pem"
     },
     "vaService": {
-      "serverAddresses": ["va.boulder:19092"],
+      "serverAddresses": ["va1.boulder:9092", "va2.boulder:9092"],
       "timeout": "20s"
     },
     "caService": {
-      "serverAddresses": ["ca.boulder:19093"],
+      "serverAddresses": ["ca1.boulder:9093", "ca2.boulder:9093"],
       "timeout": "15s"
     },
     "publisherService": {
-      "serverAddresses": ["publisher.boulder:19091"],
-      "timeout": "300s"
+      "serverAddresses": ["publisher1.boulder:9091", "publisher2.boulder:9091"],
+      "timeout": "15s"
     },
     "saService": {
-      "serverAddresses": ["sa.boulder:19095"],
+      "serverAddresses": ["sa1.boulder:9095", "sa2.boulder:9095"],
       "timeout": "15s"
     },
     "grpc": {
@@ -41,10 +41,38 @@
       ]
     },
     "features": {
+      "WildcardDomains": true,
       "CountCertificatesExact": true,
-      "ReusePendingAuthz": false,
-      "EnforceChallengeDisable": true
-    }
+      "ReusePendingAuthz": false
+    },
+    "CTLogGroups2": [
+      {
+        "name": "a",
+        "logs": [
+          {
+            "uri": "http://boulder:4500",
+            "key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEYggOxPnPkzKBIhTacSYoIfnSL2jPugcbUKx83vFMvk5gKAz/AGe87w20riuPwEGn229hKVbEKHFB61NIqNHC3Q=="
+          },
+          {
+            "uri": "http://boulder:4501",
+            "key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEKtnFevaXV/kB8dmhCNZHmxKVLcHX1plaAsY9LrKilhYxdmQZiu36LvAvosTsqMVqRK9a96nC8VaxAdaHUbM8EA=="
+          }
+        ]
+      },
+      {
+        "name": "b",
+        "logs": [
+          {
+            "uri": "http://boulder:4510",
+            "key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEyw1HymhJkuxSIgt3gqW3sVXqMqB3EFsXcMfPFo0vYwjNiRmCJDXKsR0Flp7MAK+wc3X/7Hpc8liUbMhPet7tEA=="
+          },
+          {
+            "uri": "http://boulder:4511",
+            "key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEFRu37ZRLg8lT4rVQwMwh4oAOpXb4Sx+9hgQ+JFCjmAv3oDV+sDOMsC7hULkGTn+LB5L1SRo/XIY4Kw5V+nFXgg=="
+          }
+        ]
+      }
+    ]
   },
 
   "pa": {

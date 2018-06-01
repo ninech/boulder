@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 	"flag"
@@ -12,6 +11,7 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/jmhodges/clock"
 	"github.com/letsencrypt/boulder/cmd"
 	"github.com/letsencrypt/boulder/core"
 	"github.com/letsencrypt/boulder/features"
@@ -27,7 +27,6 @@ import (
 type config struct {
 	WFE struct {
 		cmd.ServiceConfig
-		BaseURL          string
 		ListenAddress    string
 		TLSListenAddress string
 
@@ -54,14 +53,28 @@ type config struct {
 		CertificateChains map[string][]string
 
 		Features map[string]bool
-	}
 
-	SubscriberAgreementURL string
+		// DirectoryCAAIdentity is used for the /directory response's "meta"
+		// element's "caaIdentities" field. It should match the VA's "issuerDomain"
+		// configuration value (this value is the one used to enforce CAA)
+		DirectoryCAAIdentity string
+		// DirectoryWebsite is used for the /directory response's "meta" element's
+		// "website" field.
+		DirectoryWebsite string
+
+		// ACMEv2 requests (outside some registration/revocation messages) use a JWS with
+		// a KeyID header containing the full account URL. For new accounts this
+		// will be a KeyID based on the HTTP request's Host header and the ACMEv2
+		// account path. For legacy ACMEv1 accounts we need to whitelist the account
+		// ID prefix that legacy accounts would have been using based on the Host
+		// header of the WFE1 instance and the legacy 'reg' path component. This
+		// will differ in configuration for production and staging.
+		LegacyKeyIDPrefix string
+	}
 
 	Syslog cmd.SyslogConfig
 
 	Common struct {
-		BaseURL    string
 		IssuerCert string
 	}
 }
@@ -70,7 +83,8 @@ type config struct {
 // validates that the PEM is well-formed with no leftover bytes, and contains
 // only a well-formed X509 certificate. If the cert file meets these
 // requirements the PEM bytes from the file are returned, otherwise an error is
-// returned.
+// returned. If the PEM contents of a certFile do not have a trailing newline
+// one is added.
 func loadCertificateFile(aiaIssuerURL, certFile string) ([]byte, error) {
 	pemBytes, err := ioutil.ReadFile(certFile)
 	if err != nil {
@@ -78,6 +92,12 @@ func loadCertificateFile(aiaIssuerURL, certFile string) ([]byte, error) {
 			"CertificateChain entry for AIA issuer url %q has an "+
 				"invalid chain file: %q - error reading contents: %s",
 			aiaIssuerURL, certFile, err)
+	}
+	if bytes.Contains(pemBytes, []byte("\r\n")) {
+		return nil, fmt.Errorf(
+			"CertificateChain entry for AIA issuer url %q has an "+
+				"invalid chain file: %q - contents had CRLF line endings",
+			aiaIssuerURL, certFile)
 	}
 	// Try to decode the contents as PEM
 	certBlock, rest := pem.Decode(pemBytes)
@@ -111,7 +131,10 @@ func loadCertificateFile(aiaIssuerURL, certFile string) ([]byte, error) {
 				"input (%d bytes)",
 			aiaIssuerURL, certFile, len(rest))
 	}
-
+	// If the PEM contents don't end in a \n, add it.
+	if pemBytes[len(pemBytes)-1] != '\n' {
+		pemBytes = append(pemBytes, '\n')
+	}
 	return pemBytes, nil
 }
 
@@ -157,19 +180,15 @@ func loadCertificateChains(chainConfig map[string][]string) (map[string][]byte, 
 	return results, nil
 }
 
-func setupWFE(c config, logger blog.Logger, stats metrics.Scope) (core.RegistrationAuthority, core.StorageAuthority) {
-	var tls *tls.Config
-	var err error
-	if c.WFE.TLS.CertFile != nil {
-		tls, err = c.WFE.TLS.Load()
-		cmd.FailOnError(err, "TLS config")
-	}
+func setupWFE(c config, logger blog.Logger, stats metrics.Scope, clk clock.Clock) (core.RegistrationAuthority, core.StorageAuthority) {
+	tlsConfig, err := c.WFE.TLS.Load()
+	cmd.FailOnError(err, "TLS config")
 	clientMetrics := bgrpc.NewClientMetrics(stats)
-	raConn, err := bgrpc.ClientSetup(c.WFE.RAService, tls, clientMetrics)
+	raConn, err := bgrpc.ClientSetup(c.WFE.RAService, tlsConfig, clientMetrics, clk)
 	cmd.FailOnError(err, "Failed to load credentials and create gRPC connection to RA")
 	rac := bgrpc.NewRegistrationAuthorityClient(rapb.NewRegistrationAuthorityClient(raConn))
 
-	saConn, err := bgrpc.ClientSetup(c.WFE.SAService, tls, clientMetrics)
+	saConn, err := bgrpc.ClientSetup(c.WFE.SAService, tlsConfig, clientMetrics, clk)
 	cmd.FailOnError(err, "Failed to load credentials and create gRPC connection to SA")
 	sac := bgrpc.NewStorageAuthorityClient(sapb.NewStorageAuthorityClient(saConn))
 
@@ -198,34 +217,30 @@ func main() {
 	defer logger.AuditPanic()
 	logger.Info(cmd.VersionString())
 
+	clk := cmd.Clock()
+
 	kp, err := goodkey.NewKeyPolicy("") // don't load any weak keys
 	cmd.FailOnError(err, "Unable to create key policy")
-	wfe, err := wfe2.NewWebFrontEndImpl(scope, cmd.Clock(), kp, certChains, logger)
+	wfe, err := wfe2.NewWebFrontEndImpl(scope, clk, kp, certChains, logger)
 	cmd.FailOnError(err, "Unable to create WFE")
-	rac, sac := setupWFE(c, logger, scope)
+	rac, sac := setupWFE(c, logger, scope, clk)
 	wfe.RA = rac
 	wfe.SA = sac
 
-	// TODO: remove this check once the production config uses the SubscriberAgreementURL in the wfe section
-	if c.WFE.SubscriberAgreementURL != "" {
-		wfe.SubscriberAgreementURL = c.WFE.SubscriberAgreementURL
-	} else {
-		wfe.SubscriberAgreementURL = c.SubscriberAgreementURL
-	}
-
+	wfe.SubscriberAgreementURL = c.WFE.SubscriberAgreementURL
 	wfe.AllowOrigins = c.WFE.AllowOrigins
 	wfe.AcceptRevocationReason = c.WFE.AcceptRevocationReason
 	wfe.AllowAuthzDeactivation = c.WFE.AllowAuthzDeactivation
+	wfe.DirectoryCAAIdentity = c.WFE.DirectoryCAAIdentity
+	wfe.DirectoryWebsite = c.WFE.DirectoryWebsite
+	wfe.LegacyKeyIDPrefix = c.WFE.LegacyKeyIDPrefix
 
 	wfe.IssuerCert, err = cmd.LoadCert(c.Common.IssuerCert)
 	cmd.FailOnError(err, fmt.Sprintf("Couldn't read issuer cert [%s]", c.Common.IssuerCert))
 
-	logger.Info(fmt.Sprintf("WFE using key policy: %#v", kp))
+	logger.Infof("WFE using key policy: %#v", kp)
 
-	// Set up paths
-	wfe.BaseURL = c.Common.BaseURL
-
-	logger.Info(fmt.Sprintf("Server running, listening on %s...\n", c.WFE.ListenAddress))
+	logger.Infof("Server running, listening on %s...\n", c.WFE.ListenAddress)
 	handler := wfe.Handler()
 	srv := &http.Server{
 		Addr:    c.WFE.ListenAddress,
@@ -247,7 +262,9 @@ func main() {
 		}
 		go func() {
 			err := tlsSrv.ListenAndServeTLS(c.WFE.ServerCertificatePath, c.WFE.ServerKeyPath)
-			cmd.FailOnError(err, "Error starting TLS server")
+			if err != nil && err != http.ErrServerClosed {
+				cmd.FailOnError(err, "Running TLS server")
+			}
 		}()
 	}
 

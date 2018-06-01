@@ -1,7 +1,6 @@
 package main
 
 import (
-	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
 	"flag"
@@ -63,15 +62,13 @@ type config struct {
 func setupContext(c config) (core.RegistrationAuthority, blog.Logger, *gorp.DbMap, core.StorageAuthority) {
 	logger := cmd.NewLogger(c.Syslog)
 
-	var tls *tls.Config
-	var err error
-	if c.Revoker.TLS.CertFile != nil {
-		tls, err = c.Revoker.TLS.Load()
-		cmd.FailOnError(err, "TLS config")
-	}
+	tlsConfig, err := c.Revoker.TLS.Load()
+	cmd.FailOnError(err, "TLS config")
+
+	clk := cmd.Clock()
 
 	clientMetrics := bgrpc.NewClientMetrics(metrics.NewNoopScope())
-	raConn, err := bgrpc.ClientSetup(c.Revoker.RAService, tls, clientMetrics)
+	raConn, err := bgrpc.ClientSetup(c.Revoker.RAService, tlsConfig, clientMetrics, clk)
 	cmd.FailOnError(err, "Failed to load credentials and create gRPC connection to RA")
 	rac := bgrpc.NewRegistrationAuthorityClient(rapb.NewRegistrationAuthorityClient(raConn))
 
@@ -80,7 +77,7 @@ func setupContext(c config) (core.RegistrationAuthority, blog.Logger, *gorp.DbMa
 	dbMap, err := sa.NewDbMap(dbURL, c.Revoker.DBConfig.MaxDBConns)
 	cmd.FailOnError(err, "Couldn't setup database connection")
 
-	saConn, err := bgrpc.ClientSetup(c.Revoker.SAService, tls, clientMetrics)
+	saConn, err := bgrpc.ClientSetup(c.Revoker.SAService, tlsConfig, clientMetrics, clk)
 	cmd.FailOnError(err, "Failed to load credentials and create gRPC connection to SA")
 	sac := bgrpc.NewStorageAuthorityClient(sapb.NewStorageAuthorityClient(saConn))
 
@@ -110,7 +107,7 @@ func revokeBySerial(ctx context.Context, serial string, reasonCode revocation.Re
 		return
 	}
 
-	logger.Info(fmt.Sprintf("Revoked certificate %s with reason '%s'", serial, revocation.ReasonToString[reasonCode]))
+	logger.Infof("Revoked certificate %s with reason '%s'", serial, revocation.ReasonToString[reasonCode])
 	return
 }
 
@@ -232,11 +229,8 @@ func main() {
 		ident := core.AcmeIdentifier{Value: domain, Type: core.IdentifierDNS}
 		authsRevoked, pendingAuthsRevoked, err := sac.RevokeAuthorizationsByDomain(ctx, ident)
 		cmd.FailOnError(err, fmt.Sprintf("Failed to revoke authorizations for %s", ident.Value))
-		logger.Info(fmt.Sprintf(
-			"Revoked %d pending authorizations and %d final authorizations\n",
-			pendingAuthsRevoked,
-			authsRevoked,
-		))
+		logger.Infof("Revoked %d pending authorizations and %d final authorizations",
+			pendingAuthsRevoked, authsRevoked)
 
 	default:
 		usage()

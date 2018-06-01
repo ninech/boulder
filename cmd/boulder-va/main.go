@@ -31,7 +31,8 @@ type config struct {
 		// The number of times to try a DNS query (that has a temporary error)
 		// before giving up. May be short-circuited by deadlines. A zero value
 		// will be turned into 1.
-		DNSTries int
+		DNSTries     int
+		DNSResolvers []string
 
 		RemoteVAs                   []cmd.GRPCClientConfig
 		MaxRemoteValidationFailures int
@@ -49,6 +50,8 @@ type config struct {
 }
 
 func main() {
+	grpcAddr := flag.String("addr", "", "gRPC listen address override")
+	debugAddr := flag.String("debug-addr", "", "Debug server address override")
 	configFile := flag.String("config", "", "File path to the configuration file for this service")
 	flag.Parse()
 	if *configFile == "" {
@@ -62,6 +65,13 @@ func main() {
 
 	err = features.Set(c.VA.Features)
 	cmd.FailOnError(err, "Failed to set feature flags")
+
+	if *grpcAddr != "" {
+		c.VA.GRPC.Address = *grpcAddr
+	}
+	if *debugAddr != "" {
+		c.VA.DebugAddr = *debugAddr
+	}
 
 	scope, logger := cmd.StatsAndLogging(c.Syslog, c.VA.DebugAddr)
 	defer logger.AuditPanic()
@@ -93,33 +103,36 @@ func main() {
 	}
 	clk := cmd.Clock()
 	var resolver bdns.DNSClient
+	if len(c.Common.DNSResolver) != 0 {
+		c.VA.DNSResolvers = append(c.VA.DNSResolvers, c.Common.DNSResolver)
+	}
 	if !c.Common.DNSAllowLoopbackAddresses {
 		r := bdns.NewDNSClientImpl(
 			dnsTimeout,
-			[]string{c.Common.DNSResolver},
+			c.VA.DNSResolvers,
 			scope,
 			clk,
 			dnsTries)
 		resolver = r
 	} else {
-		r := bdns.NewTestDNSClientImpl(dnsTimeout, []string{c.Common.DNSResolver}, scope, clk, dnsTries)
+		r := bdns.NewTestDNSClientImpl(dnsTimeout, c.VA.DNSResolvers, scope, clk, dnsTries)
 		resolver = r
 	}
 
-	tls, err := c.VA.TLS.Load()
-	cmd.FailOnError(err, "TLS config")
+	tlsConfig, err := c.VA.TLS.Load()
+	cmd.FailOnError(err, "tlsConfig config")
 
 	clientMetrics := bgrpc.NewClientMetrics(scope)
 	var remotes []va.RemoteVA
 	if len(c.VA.RemoteVAs) > 0 {
 		for _, rva := range c.VA.RemoteVAs {
-			vaConn, err := bgrpc.ClientSetup(&rva, tls, clientMetrics)
+			vaConn, err := bgrpc.ClientSetup(&rva, tlsConfig, clientMetrics, clk)
 			cmd.FailOnError(err, "Unable to create remote VA client")
 			remotes = append(
 				remotes,
 				va.RemoteVA{
-					bgrpc.NewValidationAuthorityGRPCClient(vaConn),
-					strings.Join(rva.ServerAddresses, ","),
+					ValidationAuthority: bgrpc.NewValidationAuthorityGRPCClient(vaConn),
+					Addresses:           strings.Join(rva.ServerAddresses, ","),
 				},
 			)
 		}
@@ -138,22 +151,15 @@ func main() {
 		logger)
 
 	serverMetrics := bgrpc.NewServerMetrics(scope)
-	grpcSrv, l, err := bgrpc.NewServer(c.VA.GRPC, tls, serverMetrics)
+	grpcSrv, l, err := bgrpc.NewServer(c.VA.GRPC, tlsConfig, serverMetrics, clk)
 	cmd.FailOnError(err, "Unable to setup VA gRPC server")
 	err = bgrpc.RegisterValidationAuthorityGRPCServer(grpcSrv, vai)
 	cmd.FailOnError(err, "Unable to register VA gRPC server")
 	vaPB.RegisterCAAServer(grpcSrv, vai)
 	cmd.FailOnError(err, "Unable to register CAA gRPC server")
-	go func() {
-		err = cmd.FilterShutdownErrors(grpcSrv.Serve(l))
-		cmd.FailOnError(err, "VA gRPC service failed")
-	}()
 
-	go cmd.CatchSignals(logger, func() {
-		if grpcSrv != nil {
-			grpcSrv.GracefulStop()
-		}
-	})
+	go cmd.CatchSignals(logger, grpcSrv.GracefulStop)
 
-	select {}
+	err = cmd.FilterShutdownErrors(grpcSrv.Serve(l))
+	cmd.FailOnError(err, "VA gRPC service failed")
 }

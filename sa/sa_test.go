@@ -11,7 +11,6 @@ import (
 	"io/ioutil"
 	"math/big"
 	"net"
-	"os"
 	"reflect"
 	"sync"
 	"testing"
@@ -26,6 +25,7 @@ import (
 	"github.com/letsencrypt/boulder/core"
 	corepb "github.com/letsencrypt/boulder/core/proto"
 	berrors "github.com/letsencrypt/boulder/errors"
+	"github.com/letsencrypt/boulder/features"
 	blog "github.com/letsencrypt/boulder/log"
 	"github.com/letsencrypt/boulder/metrics"
 	"github.com/letsencrypt/boulder/revocation"
@@ -495,13 +495,18 @@ func TestAddCertificate(t *testing.T) {
 	certDER, err := ioutil.ReadFile("www.eff.org.der")
 	test.AssertNotError(t, err, "Couldn't read example cert DER")
 
-	digest, err := sa.AddCertificate(ctx, certDER, reg.ID, nil)
+	// Calling AddCertificate with a non-nil issued should succeed
+	issued := sa.clk.Now()
+	digest, err := sa.AddCertificate(ctx, certDER, reg.ID, nil, &issued)
 	test.AssertNotError(t, err, "Couldn't add www.eff.org.der")
 	test.AssertEquals(t, digest, "qWoItDZmR4P9eFbeYgXXP3SR4ApnkQj8x4LsB_ORKBo")
 
 	retrievedCert, err := sa.GetCertificate(ctx, "000000000000000000000000000000021bd4")
 	test.AssertNotError(t, err, "Couldn't get www.eff.org.der by full serial")
 	test.AssertByteEquals(t, certDER, retrievedCert.DER)
+	// Because nil was provided as the Issued time we expect the cert was stored
+	// with an issued time equal to now
+	test.AssertEquals(t, retrievedCert.Issued, clk.Now())
 
 	certificateStatus, err := sa.GetCertificateStatus(ctx, "000000000000000000000000000000021bd4")
 	test.AssertNotError(t, err, "Couldn't get status for www.eff.org.der")
@@ -515,13 +520,18 @@ func TestAddCertificate(t *testing.T) {
 	test.AssertNotError(t, err, "Couldn't read example cert DER")
 	serial := "ffdd9b8a82126d96f61d378d5ba99a0474f0"
 
-	digest2, err := sa.AddCertificate(ctx, certDER2, reg.ID, nil)
+	// Add the certificate with a specific issued time instead of nil
+	issuedTime := time.Date(2018, 4, 1, 7, 0, 0, 0, time.UTC)
+	digest2, err := sa.AddCertificate(ctx, certDER2, reg.ID, nil, &issuedTime)
 	test.AssertNotError(t, err, "Couldn't add test-cert.der")
 	test.AssertEquals(t, digest2, "vrlPN5wIPME1D2PPsCy-fGnTWh8dMyyYQcXPRkjHAQI")
 
 	retrievedCert2, err := sa.GetCertificate(ctx, serial)
 	test.AssertNotError(t, err, "Couldn't get test-cert.der")
 	test.AssertByteEquals(t, certDER2, retrievedCert2.DER)
+	// The cert should have been added with the specific issued time we provided
+	// as the issued field.
+	test.AssertEquals(t, retrievedCert2.Issued, issuedTime)
 
 	certificateStatus2, err := sa.GetCertificateStatus(ctx, serial)
 	test.AssertNotError(t, err, "Couldn't get status for test-cert.der")
@@ -533,7 +543,7 @@ func TestAddCertificate(t *testing.T) {
 	test.AssertNotError(t, err, "Couldn't read example cert DER")
 	serial = "ffa0160630d618b2eb5c0510824b14274856"
 	ocspResp := []byte{0, 0, 1}
-	_, err = sa.AddCertificate(ctx, certDER3, reg.ID, ocspResp)
+	_, err = sa.AddCertificate(ctx, certDER3, reg.ID, ocspResp, &issuedTime)
 	test.AssertNotError(t, err, "Couldn't add test-cert2.der")
 
 	certificateStatus3, err := sa.GetCertificateStatus(ctx, serial)
@@ -578,7 +588,8 @@ func TestCountCertificatesByNames(t *testing.T) {
 
 	// Add the test cert and query for its names.
 	reg := satest.CreateWorkingRegistration(t, sa)
-	_, err = sa.AddCertificate(ctx, certDER, reg.ID, nil)
+	issued := sa.clk.Now()
+	_, err = sa.AddCertificate(ctx, certDER, reg.ID, nil, &issued)
 	test.AssertNotError(t, err, "Couldn't add test-cert.der")
 
 	// Time range including now should find the cert
@@ -620,7 +631,7 @@ func TestCountCertificatesByNames(t *testing.T) {
 
 	certDER2, err := ioutil.ReadFile("test-cert2.der")
 	test.AssertNotError(t, err, "Couldn't read test-cert2.der")
-	_, err = sa.AddCertificate(ctx, certDER2, reg.ID, nil)
+	_, err = sa.AddCertificate(ctx, certDER2, reg.ID, nil, &issued)
 	test.AssertNotError(t, err, "Couldn't add test-cert2.der")
 	counts, err = sa.CountCertificatesByNames(ctx, names, yesterday, now.Add(10000*time.Hour))
 	test.AssertNotError(t, err, "Error counting certs.")
@@ -698,7 +709,8 @@ func TestMarkCertificateRevoked(t *testing.T) {
 	// Add a cert to the DB to test with.
 	certDER, err := ioutil.ReadFile("www.eff.org.der")
 	test.AssertNotError(t, err, "Couldn't read example cert DER")
-	_, err = sa.AddCertificate(ctx, certDER, reg.ID, nil)
+	issued := sa.clk.Now()
+	_, err = sa.AddCertificate(ctx, certDER, reg.ID, nil, &issued)
 	test.AssertNotError(t, err, "Couldn't add www.eff.org.der")
 
 	serial := "000000000000000000000000000000021bd4"
@@ -721,35 +733,6 @@ func TestMarkCertificateRevoked(t *testing.T) {
 	if !fc.Now().Equal(certificateStatusObj.RevokedDate) {
 		t.Errorf("RevokedData, expected %s, got %s", fc.Now(), certificateStatusObj.RevokedDate)
 	}
-}
-
-func TestCountCertificates(t *testing.T) {
-	sa, fc, cleanUp := initSA(t)
-	defer cleanUp()
-	fc.Add(time.Hour * 24)
-	now := fc.Now()
-	count, err := sa.CountCertificatesRange(ctx, now.Add(-24*time.Hour), now)
-	test.AssertNotError(t, err, "Couldn't get certificate count for the last 24hrs")
-	test.AssertEquals(t, count, int64(0))
-
-	reg := satest.CreateWorkingRegistration(t, sa)
-	// Add a cert to the DB to test with.
-	certDER, err := ioutil.ReadFile("www.eff.org.der")
-	test.AssertNotError(t, err, "Couldn't read example cert DER")
-	_, err = sa.AddCertificate(ctx, certDER, reg.ID, nil)
-	test.AssertNotError(t, err, "Couldn't add www.eff.org.der")
-
-	fc.Add(2 * time.Hour)
-	now = fc.Now()
-	count, err = sa.CountCertificatesRange(ctx, now.Add(-24*time.Hour), now)
-	test.AssertNotError(t, err, "Couldn't get certificate count for the last 24hrs")
-	test.AssertEquals(t, count, int64(1))
-
-	fc.Add(24 * time.Hour)
-	now = fc.Now()
-	count, err = sa.CountCertificatesRange(ctx, now.Add(-24*time.Hour), now)
-	test.AssertNotError(t, err, "Couldn't get certificate count for the last 24hrs")
-	test.AssertEquals(t, count, int64(0))
 }
 
 func TestCountRegistrationsByIP(t *testing.T) {
@@ -1021,7 +1004,8 @@ func TestPreviousCertificateExists(t *testing.T) {
 	certDER, err := ioutil.ReadFile("www.eff.org.der")
 	test.AssertNotError(t, err, "reading cert DER")
 
-	_, err = sa.AddCertificate(ctx, certDER, reg.ID, nil)
+	issued := sa.clk.Now()
+	_, err = sa.AddCertificate(ctx, certDER, reg.ID, nil, &issued)
 	test.AssertNotError(t, err, "calling AddCertificate")
 
 	cases := []struct {
@@ -1332,10 +1316,6 @@ func TestGetNewIssuancesByFQDNSet(t *testing.T) {
 }
 
 func TestNewOrder(t *testing.T) {
-	if os.Getenv("BOULDER_CONFIG_DIR") != "test/config-next" {
-		return
-	}
-
 	sa, _, cleanup := initSA(t)
 	defer cleanup()
 
@@ -1371,10 +1351,6 @@ func TestNewOrder(t *testing.T) {
 }
 
 func TestSetOrderProcessing(t *testing.T) {
-	if os.Getenv("BOULDER_CONFIG_DIR") != "test/config-next" {
-		return
-	}
-
 	sa, fc, cleanup := initSA(t)
 	defer cleanup()
 
@@ -1428,10 +1404,6 @@ func TestSetOrderProcessing(t *testing.T) {
 }
 
 func TestFinalizeOrder(t *testing.T) {
-	if os.Getenv("BOULDER_CONFIG_DIR") != "test/config-next" {
-		return
-	}
-
 	sa, fc, cleanup := initSA(t)
 	defer cleanup()
 
@@ -1491,12 +1463,6 @@ func TestFinalizeOrder(t *testing.T) {
 }
 
 func TestOrder(t *testing.T) {
-	// Only run under test/config-next config where 20170731115209_AddOrders.sql
-	// has been applied
-	if os.Getenv("BOULDER_CONFIG_DIR") != "test/config-next" {
-		return
-	}
-
 	sa, fc, cleanup := initSA(t)
 	defer cleanup()
 
@@ -1507,7 +1473,6 @@ func TestOrder(t *testing.T) {
 	})
 	test.AssertNotError(t, err, "Couldn't create test registration")
 
-	// Add one pending authz
 	authzExpires := fc.Now().Add(time.Hour)
 	newAuthz := core.Authorization{
 		Identifier:     core.AcmeIdentifier{Type: core.IdentifierDNS, Value: "example.com"},
@@ -1518,7 +1483,8 @@ func TestOrder(t *testing.T) {
 	authz, err := sa.NewPendingAuthorization(ctx, newAuthz)
 	test.AssertNotError(t, err, "Couldn't create new pending authorization")
 
-	expires := time.Now().Truncate(time.Second).UnixNano()
+	// Set the order to expire in two hours
+	expires := fc.Now().Add(2 * time.Hour).UnixNano()
 	empty := ""
 
 	inputOrder := &corepb.Order{
@@ -1528,37 +1494,41 @@ func TestOrder(t *testing.T) {
 		Authorizations: []string{authz.ID},
 	}
 
+	// Create the order
 	order, err := sa.NewOrder(context.Background(), inputOrder)
 	test.AssertNotError(t, err, "sa.NewOrder failed")
-	test.AssertEquals(t, *order.Id, int64(1))
 
 	pendingStatus := string(core.StatusPending)
 	falseBool := false
 	one := int64(1)
+	nowTS := sa.clk.Now().UnixNano()
+	// The Order from GetOrder should match the following expected order
 	expectedOrder := &corepb.Order{
-		// The expected order matches the input order
+		// The registration ID, authorizations, expiry, and names should match the
+		// input to NewOrder
 		RegistrationID: inputOrder.RegistrationID,
-		Expires:        inputOrder.Expires,
-		Names:          inputOrder.Names,
 		Authorizations: inputOrder.Authorizations,
-		// And should also have an empty serial and the correct status and
-		// processing state, and an ID of 1
-		Id:                &one,
+		Names:          inputOrder.Names,
+		Expires:        inputOrder.Expires,
+		// The ID should have been set to 1 by the SA
+		Id: &one,
+		// The status should be pending
+		Status: &pendingStatus,
+		// The serial should be empty since this is a pending order
 		CertificateSerial: &empty,
-		BeganProcessing:   &falseBool,
-		Status:            &pendingStatus,
+		// We should not be processing it
+		BeganProcessing: &falseBool,
+		// The created timestamp should have been set to the current time
+		Created: &nowTS,
 	}
 
+	// Fetch the order by its ID and make sure it matches the expected
 	storedOrder, err := sa.GetOrder(context.Background(), &sapb.OrderRequest{Id: order.Id})
-	test.AssertNotError(t, err, "sa.Order failed")
+	test.AssertNotError(t, err, "sa.GetOrder failed")
 	test.AssertDeepEquals(t, storedOrder, expectedOrder)
 }
 
-func TestGetOrderAuthorizations(t *testing.T) {
-	if os.Getenv("BOULDER_CONFIG_DIR") != "test/config-next" {
-		return
-	}
-
+func TestGetValidOrderAuthorizations(t *testing.T) {
 	sa, _, cleanup := initSA(t)
 	defer cleanup()
 
@@ -1588,14 +1558,16 @@ func TestGetOrderAuthorizations(t *testing.T) {
 
 	// Now fetch the order authorizations for the order we added for the
 	// throw-away reg
-	authzMap, err := sa.GetOrderAuthorizations(context.Background(), &sapb.GetOrderAuthorizationsRequest{
-		Id:     order.Id,
-		AcctID: &reg.ID,
-	})
+	authzMap, err := sa.GetValidOrderAuthorizations(
+		context.Background(),
+		&sapb.GetValidOrderAuthorizationsRequest{
+			Id:     order.Id,
+			AcctID: &reg.ID,
+		})
 	// It should not fail and one valid authorization for the example.com domain
 	// should be present with ID and status equal to the authz we created earlier.
-	test.AssertNotError(t, err, "GetOrderAuthorizations failed")
-	test.AssertNotNil(t, authzMap, "GetOrderAuthorizations result was nil")
+	test.AssertNotError(t, err, "GetValidOrderAuthorizations failed")
+	test.AssertNotNil(t, authzMap, "GetValidOrderAuthorizations result was nil")
 	test.AssertEquals(t, len(authzMap), 1)
 	test.AssertNotNil(t, authzMap["example.com"], "Authz for example.com was nil")
 	test.AssertEquals(t, authzMap["example.com"].ID, authz.ID)
@@ -1603,21 +1575,25 @@ func TestGetOrderAuthorizations(t *testing.T) {
 
 	// Getting the order authorizations for an order that doesn't exist should return nothing
 	missingID := int64(0xC0FFEEEEEEE)
-	authzMap, err = sa.GetOrderAuthorizations(context.Background(), &sapb.GetOrderAuthorizationsRequest{
-		Id:     &missingID,
-		AcctID: &reg.ID,
-	})
-	test.AssertNotError(t, err, "GetOrderAuthorizations for non-existent order errored")
+	authzMap, err = sa.GetValidOrderAuthorizations(
+		context.Background(),
+		&sapb.GetValidOrderAuthorizationsRequest{
+			Id:     &missingID,
+			AcctID: &reg.ID,
+		})
+	test.AssertNotError(t, err, "GetValidOrderAuthorizations for non-existent order errored")
 	test.AssertEquals(t, len(authzMap), 0)
 
 	// Getting the order authorizations for an order that does exist, but for the
 	// wrong acct ID should return nothing
 	wrongAcctID := int64(0xDEADDA7ABA5E)
-	authzMap, err = sa.GetOrderAuthorizations(context.Background(), &sapb.GetOrderAuthorizationsRequest{
-		Id:     order.Id,
-		AcctID: &wrongAcctID,
-	})
-	test.AssertNotError(t, err, "GetOrderAuthorizations for existent order, wrong acctID errored")
+	authzMap, err = sa.GetValidOrderAuthorizations(
+		context.Background(),
+		&sapb.GetValidOrderAuthorizationsRequest{
+			Id:     order.Id,
+			AcctID: &wrongAcctID,
+		})
+	test.AssertNotError(t, err, "GetValidOrderAuthorizations for existent order, wrong acctID errored")
 	test.AssertEquals(t, len(authzMap), 0)
 }
 
@@ -1638,37 +1614,122 @@ func TestGetAuthorizations(t *testing.T) {
 	defer cleanup()
 
 	reg := satest.CreateWorkingRegistration(t, sa)
-	exp := fc.Now().AddDate(0, 0, 1)
-	pa := core.Authorization{RegistrationID: reg.ID, Identifier: core.AcmeIdentifier{Type: core.IdentifierDNS, Value: "a"}, Status: core.StatusPending, Expires: &exp, Combinations: [][]int{[]int{0, 1}}}
+	exp := fc.Now().AddDate(0, 0, 10)
 
+	identA := "aaa"
+	identB := "bbb"
+	identC := "ccc"
+	identD := "ddd"
+	idents := []string{identA, identB, identC}
+
+	// Create an authorization template for a pending authorization with a dummy identifier
+	pa := core.Authorization{
+		RegistrationID: reg.ID,
+		Identifier:     core.AcmeIdentifier{Type: core.IdentifierDNS, Value: identA},
+		Status:         core.StatusPending,
+		Expires:        &exp,
+		Combinations:   [][]int{[]int{0, 1}},
+	}
+
+	// Add the template to create pending authorization A
 	paA, err := sa.NewPendingAuthorization(ctx, pa)
 	test.AssertNotError(t, err, "Couldn't create new pending authorization")
 	test.Assert(t, paA.ID != "", "ID shouldn't be blank")
 
-	pa.Identifier.Value = "b"
+	// Twiddle the template to have a different identifier
+	pa.Identifier.Value = identB
+	// Add the template to create pending authorization B
 	paB, err := sa.NewPendingAuthorization(ctx, pa)
 	test.AssertNotError(t, err, "Couldn't create new pending authorization")
 	test.Assert(t, paB.ID != "", "ID shouldn't be blank")
 
+	// Set pending authorization A's status to valid, and then finalize it
 	paB.Status = core.StatusValid
 	err = sa.FinalizeAuthorization(ctx, paB)
 	test.AssertNotError(t, err, "Couldn't finalize pending authorization with ID "+paB.ID)
 
-	now := fc.Now().UnixNano()
+	// Adjust the template to have an expiry in 1 hour from now.
+	nearbyExpires := fc.Now().Add(time.Hour)
+	pa.Expires = &nearbyExpires
+	pa.Identifier.Value = identC
+	// Add the template to create pending authorization C
+	paC, err := sa.NewPendingAuthorization(ctx, pa)
+	// There should be no error
+	test.AssertNotError(t, err, "Couldn't create new pending authorization")
+	test.Assert(t, paC.ID != "", "ID shouldn't be blank")
+
+	// Don't require V2 authorizations because the above pending authorizations
+	// aren't associated with orders, and therefore are seen as legacy V1
+	// authorizations.
+	requireV2Authzs := false
+
+	// Set an expiry cut off of 1 day in the future similar to `RA.NewOrder`. This
+	// should exclude pending authorization C based on its nearbyExpires expiry
+	// value.
+	expiryCutoff := fc.Now().AddDate(0, 0, 1).UnixNano()
+	// Get authorizations for the names used above.
 	authz, err := sa.GetAuthorizations(context.Background(), &sapb.GetAuthorizationsRequest{
-		RegistrationID: &reg.ID,
-		Domains:        []string{"a", "b"},
-		Now:            &now,
+		RegistrationID:  &reg.ID,
+		Domains:         idents,
+		Now:             &expiryCutoff,
+		RequireV2Authzs: &requireV2Authzs,
 	})
+	// It should not fail
 	test.AssertNotError(t, err, "sa.GetAuthorizations failed")
+	// We should get back two authorizations since one of the three authorizations
+	// created above expires too soon.
 	test.AssertEquals(t, len(authz.Authz), 2)
+
+	// Get authorizations for the names used above, and one name that doesn't exist
 	authz, err = sa.GetAuthorizations(context.Background(), &sapb.GetAuthorizationsRequest{
-		RegistrationID: &reg.ID,
-		Domains:        []string{"a", "b", "c"},
-		Now:            &now,
+		RegistrationID:  &reg.ID,
+		Domains:         append(idents, identD),
+		Now:             &expiryCutoff,
+		RequireV2Authzs: &requireV2Authzs,
 	})
+	// It should not fail
 	test.AssertNotError(t, err, "sa.GetAuthorizations failed")
+	// It should still return only two authorizations
 	test.AssertEquals(t, len(authz.Authz), 2)
+
+	// Get authorizations for the names used above, but this time enforce that no
+	// V2 authorizations are returned.
+	requireV2Authzs = true
+	authz, err = sa.GetAuthorizations(context.Background(), &sapb.GetAuthorizationsRequest{
+		RegistrationID:  &reg.ID,
+		Domains:         idents,
+		Now:             &expiryCutoff,
+		RequireV2Authzs: &requireV2Authzs,
+	})
+	// It should not fail
+	test.AssertNotError(t, err, "sa.GetAuthorizations failed")
+	// It should return no authorizations
+	test.AssertEquals(t, len(authz.Authz), 0)
+
+	// Create a new pending order that references one of the pending authorizations
+	orderExpiry := exp.Unix()
+	_, err = sa.NewOrder(ctx, &corepb.Order{
+		RegistrationID: &reg.ID,
+		Expires:        &orderExpiry,
+		Names:          []string{identA},
+		Authorizations: []string{paA.ID},
+	})
+	// It should not fail
+	test.AssertNotError(t, err, "Couldn't create new pending order")
+
+	// Calling get authorizations for the names used above with requireV2Authzs true should now find an authz
+	requireV2Authzs = true
+	authz, err = sa.GetAuthorizations(context.Background(), &sapb.GetAuthorizationsRequest{
+		RegistrationID:  &reg.ID,
+		Domains:         idents,
+		Now:             &expiryCutoff,
+		RequireV2Authzs: &requireV2Authzs,
+	})
+	// It should not fail
+	test.AssertNotError(t, err, "sa.GetAuthorizations failed")
+	// It should find the one authz we associated with an order above
+	test.AssertEquals(t, len(authz.Authz), 1)
+	test.AssertEquals(t, *authz.Authz[0].Authz.Id, paA.ID)
 }
 
 func TestAddPendingAuthorizations(t *testing.T) {
@@ -1711,104 +1772,46 @@ func TestAddPendingAuthorizations(t *testing.T) {
 	}
 }
 
-func TestCountPendingOrders(t *testing.T) {
-	if os.Getenv("BOULDER_CONFIG_DIR") != "test/config-next" {
-		return
-	}
-
-	sa, fc, cleanUp := initSA(t)
+func TestCountOrders(t *testing.T) {
+	sa, _, cleanUp := initSA(t)
 	defer cleanUp()
 
 	reg := satest.CreateWorkingRegistration(t, sa)
-	authzExpires := fc.Now().Add(time.Hour)
-	expires := authzExpires.UnixNano()
+	now := sa.clk.Now()
+	expires := now.Add(24 * time.Hour).UnixNano()
 
-	// Counting pending orders for a reg ID that doesn't exist should return 0
-	count, err := sa.CountPendingOrders(ctx, 12345)
-	test.AssertNotError(t, err, "Couldn't count pending authorizations for fake reg ID")
+	earliest := now.Add(-time.Hour)
+	latest := now.Add(time.Second)
+
+	// Counting new orders for a reg ID that doesn't exist should return 0
+	count, err := sa.CountOrders(ctx, 12345, earliest, latest)
+	test.AssertNotError(t, err, "Couldn't count new orders for fake reg ID")
 	test.AssertEquals(t, count, 0)
 
-	// Add one pending authz
-	newAuthz := core.Authorization{
-		Identifier:     core.AcmeIdentifier{Type: core.IdentifierDNS, Value: "example.com"},
-		RegistrationID: reg.ID,
-		Status:         core.StatusPending,
-		Expires:        &authzExpires,
-	}
-	pendingAuthz, err := sa.NewPendingAuthorization(ctx, newAuthz)
-	test.AssertNotError(t, err, "Couldn't create new pending authorization")
-
 	// Add one pending order
-	_, err = sa.NewOrder(ctx, &corepb.Order{
+	order, err := sa.NewOrder(ctx, &corepb.Order{
 		RegistrationID: &reg.ID,
 		Expires:        &expires,
 		Names:          []string{"example.com"},
-		Authorizations: []string{pendingAuthz.ID},
+		Authorizations: []string{"~ ~ [:: AuThOrIzEd ::] ~ ~ "},
 	})
 	test.AssertNotError(t, err, "Couldn't create new pending order")
 
-	// We expect there to be a count of one for this reg ID
-	count, err = sa.CountPendingOrders(ctx, reg.ID)
-	test.AssertNotError(t, err, "Couldn't count pending authorizations")
+	// Counting new orders for the reg ID should now yield 1
+	count, err = sa.CountOrders(ctx, reg.ID, earliest, latest)
+	test.AssertNotError(t, err, "Couldn't count new orders for reg ID")
 	test.AssertEquals(t, count, 1)
 
-	// Create another fresh pending authz
-	secondPendingAuthz, err := sa.NewPendingAuthorization(ctx, newAuthz)
-	test.AssertNotError(t, err, "Couldn't create 2nd new pending authorization")
-
-	// Create a pending order that expired an hour ago
-	expires = fc.Now().Add(-time.Hour).UnixNano()
-	_, err = sa.NewOrder(ctx, &corepb.Order{
-		RegistrationID: &reg.ID,
-		Expires:        &expires,
-		Names:          []string{"example.com"},
-		Authorizations: []string{secondPendingAuthz.ID},
-	})
-	test.AssertNotError(t, err, "Couldn't create new expired pending order")
-
-	// We still expect there to be a count of one for this reg ID since the order
-	// added above is expired
-	count, err = sa.CountPendingOrders(ctx, reg.ID)
-	test.AssertNotError(t, err, "Couldn't count pending authorizations")
-	test.AssertEquals(t, count, 1)
-
-	// Create another fresh pending authz
-	thirdPendingAuthz, err := sa.NewPendingAuthorization(ctx, newAuthz)
-	test.AssertNotError(t, err, "Couldn't create third new pending authorization")
-	// And then deactivate it
-	err = sa.DeactivateAuthorization(ctx, thirdPendingAuthz.ID)
-	test.AssertNotError(t, err, "Couldn't deactivate third new pending authorization")
-
-	// Create a deactivated order by referencing the deactivated authz
-	expires = fc.Now().Add(time.Hour).UnixNano()
-	_, err = sa.NewOrder(ctx, &corepb.Order{
-		RegistrationID: &reg.ID,
-		Expires:        &expires,
-		Names:          []string{"example.com"},
-		Authorizations: []string{thirdPendingAuthz.ID},
-	})
-	test.AssertNotError(t, err, "Couldn't create new non-pending order")
-
-	// We still expect there to be a count of one for this reg ID since the order
-	// added above is not pending
-	count, err = sa.CountPendingOrders(ctx, reg.ID)
-	test.AssertNotError(t, err, "Couldn't count pending authorizations")
-	test.AssertEquals(t, count, 1)
-
-	// If the clock is advanced by two hours we expect the count to return to
-	// 0 for this reg ID since all of the pending orders we created will have
-	// expired.
-	fc.Add(2 * time.Hour)
-	count, err = sa.CountPendingOrders(ctx, reg.ID)
-	test.AssertNotError(t, err, "Couldn't count pending authorizations")
+	// Moving the count window to after the order was created should return the
+	// count to 0
+	earliest = time.Unix(0, *order.Created).Add(time.Minute)
+	latest = earliest.Add(time.Hour)
+	count, err = sa.CountOrders(ctx, reg.ID, earliest, latest)
+	test.AssertNotError(t, err, "Couldn't count new orders for reg ID")
 	test.AssertEquals(t, count, 0)
 }
 
 func TestGetOrderForNames(t *testing.T) {
-	if os.Getenv("BOULDER_CONFIG_DIR") != "test/config-next" {
-		return
-	}
-
 	sa, fc, cleanUp := initSA(t)
 	defer cleanUp()
 
@@ -1957,10 +1960,6 @@ func TestGetOrderForNames(t *testing.T) {
 }
 
 func TestUpdatePendingAuthorizationInvalidOrder(t *testing.T) {
-	if os.Getenv("BOULDER_CONFIG_DIR") != "test/config-next" {
-		return
-	}
-
 	sa, fc, cleanUp := initSA(t)
 	defer cleanUp()
 
@@ -2028,16 +2027,13 @@ func TestUpdatePendingAuthorizationInvalidOrder(t *testing.T) {
 }
 
 func TestStatusForOrder(t *testing.T) {
-	if os.Getenv("BOULDER_CONFIG_DIR") != "test/config-next" {
-		return
-	}
-
 	sa, fc, cleanUp := initSA(t)
 	defer cleanUp()
 
 	ctx := context.Background()
 	expires := fc.Now().Add(time.Hour)
 	expiresNano := expires.UnixNano()
+	alreadyExpired := expires.Add(-2 * time.Hour)
 
 	// Create a registration to work with
 	reg := satest.CreateWorkingRegistration(t, sa)
@@ -2052,15 +2048,27 @@ func TestStatusForOrder(t *testing.T) {
 	pendingAuthz, err := sa.NewPendingAuthorization(ctx, newAuthz)
 	test.AssertNotError(t, err, "Couldn't create new pending authorization")
 
+	// Create an expired authz
+	newExpiredAuthz := core.Authorization{
+		RegistrationID: newAuthz.RegistrationID,
+		Expires:        &alreadyExpired,
+		Status:         newAuthz.Status,
+		Identifier:     core.AcmeIdentifier{Type: core.IdentifierDNS, Value: "expired.your.order.is.up"},
+	}
+	expiredAuthz, err := sa.NewPendingAuthorization(ctx, newExpiredAuthz)
+	test.AssertNotError(t, err, "Couldn't create new expired pending authorization")
+
 	// Create an invalid authz
 	invalidAuthz, err := sa.NewPendingAuthorization(ctx, newAuthz)
+	test.AssertNotError(t, err, "Couldn't create new pending authorization")
 	invalidAuthz.Status = core.StatusInvalid
 	invalidAuthz.Identifier.Value = "invalid.your.order.is.up"
 	err = sa.FinalizeAuthorization(ctx, invalidAuthz)
 	test.AssertNotError(t, err, "Couldn't finalize pending authz to invalid")
 
-	// Create a deactivate authz
+	// Create a deactivated authz
 	deactivatedAuthz, err := sa.NewPendingAuthorization(ctx, newAuthz)
+	test.AssertNotError(t, err, "Couldn't create new pending authorization")
 	deactivatedAuthz.Status = core.StatusDeactivated
 	deactivatedAuthz.Identifier.Value = "deactivated.your.order.is.up"
 	err = sa.FinalizeAuthorization(ctx, deactivatedAuthz)
@@ -2080,11 +2088,18 @@ func TestStatusForOrder(t *testing.T) {
 		ExpectedStatus   string
 		SetProcessing    bool
 		Finalize         bool
+		Features         []string
 	}{
 		{
 			Name:             "Order with an invalid authz",
 			OrderNames:       []string{"pending.your.order.is.up", "invalid.your.order.is.up", "deactivated.your.order.is.up", "valid.your.order.is.up"},
 			AuthorizationIDs: []string{pendingAuthz.ID, invalidAuthz.ID, deactivatedAuthz.ID, validAuthz.ID},
+			ExpectedStatus:   string(core.StatusInvalid),
+		},
+		{
+			Name:             "Order with an expired authz",
+			OrderNames:       []string{"pending.your.order.is.up", "expired.your.order.is.up", "deactivated.your.order.is.up", "valid.your.order.is.up"},
+			AuthorizationIDs: []string{pendingAuthz.ID, expiredAuthz.ID, deactivatedAuthz.ID, validAuthz.ID},
 			ExpectedStatus:   string(core.StatusInvalid),
 		},
 		{
@@ -2113,6 +2128,20 @@ func TestStatusForOrder(t *testing.T) {
 			ExpectedStatus:   string(core.StatusProcessing),
 		},
 		{
+			Name:             "Order with only valid authzs, not yet processed or finalized, OrderReadyStatus feature flag",
+			OrderNames:       []string{"valid.your.order.is.up"},
+			AuthorizationIDs: []string{validAuthz.ID},
+			ExpectedStatus:   string(core.StatusReady),
+			Features:         []string{"OrderReadyStatus"},
+		},
+		{
+			Name:             "Order with only valid authzs, set processing",
+			OrderNames:       []string{"valid.your.order.is.up"},
+			AuthorizationIDs: []string{validAuthz.ID},
+			SetProcessing:    true,
+			ExpectedStatus:   string(core.StatusProcessing),
+		},
+		{
 			Name:             "Order with only valid authzs, set processing and finalized",
 			OrderNames:       []string{"valid.your.order.is.up"},
 			AuthorizationIDs: []string{validAuthz.ID},
@@ -2124,12 +2153,21 @@ func TestStatusForOrder(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.Name, func(t *testing.T) {
+			if len(tc.Features) > 0 {
+				for _, flag := range tc.Features {
+					_ = features.Set(map[string]bool{flag: true})
+				}
+				defer features.Reset()
+			}
+
 			// Add a new order with the testcase authz IDs
+			processing := false
 			newOrder, err := sa.NewOrder(ctx, &corepb.Order{
-				RegistrationID: &reg.ID,
-				Expires:        &expiresNano,
-				Authorizations: tc.AuthorizationIDs,
-				Names:          tc.OrderNames,
+				RegistrationID:  &reg.ID,
+				Expires:         &expiresNano,
+				Authorizations:  tc.AuthorizationIDs,
+				Names:           tc.OrderNames,
+				BeganProcessing: &processing,
 			})
 			test.AssertNotError(t, err, "NewOrder errored unexpectedly")
 			// If requested, set the order to processing
@@ -2154,4 +2192,58 @@ func TestStatusForOrder(t *testing.T) {
 		})
 	}
 
+}
+
+// Check that getAuthorizations is fast enough; that is, it shouldn't retrieve
+// challenges for authorizations it won't return (which has been a cause of
+// slowness when there are many authorizations for the same domain name).
+func TestGetAuthorizationsFast(t *testing.T) {
+	sa, fc, cleanUp := initSA(t)
+	defer cleanUp()
+
+	ctx := context.Background()
+	reg := satest.CreateWorkingRegistration(t, sa)
+
+	expires := fc.Now().Add(time.Hour)
+
+	makeAuthz := func(s string) {
+		_, err := sa.NewPendingAuthorization(ctx, core.Authorization{
+			RegistrationID: reg.ID,
+			Expires:        &expires,
+			Status:         core.StatusPending,
+			Identifier: core.AcmeIdentifier{
+				Type:  core.IdentifierDNS,
+				Value: s,
+			},
+		})
+		test.AssertNotError(t, err, "making pending authz")
+	}
+
+	for i := 0; i < 10; i++ {
+		makeAuthz("example.com")
+		makeAuthz("www.example.com")
+		expires = expires.Add(time.Hour)
+	}
+
+	// Mock out getChallenges so we can count how many times it's called.
+	var challengeFetchCount int
+	sa.getChallenges = func(s string) ([]core.Challenge, error) {
+		challengeFetchCount++
+		return nil, nil
+	}
+
+	results, err := sa.getAuthorizations(ctx, pendingAuthorizationTable,
+		string(core.StatusPending), reg.ID, []string{"example.com", "www.example.com"},
+		fc.Now(), false)
+	test.AssertNotError(t, err, "getting authorizations")
+	if len(results) != 2 {
+		t.Fatalf("Wrong number of results. Expected 2, got %d", len(results))
+	}
+	if results["example.com"] == nil || results["www.example.com"] == nil {
+		t.Fatalf("Nil result for expected domain: %#v", results)
+	}
+	// We expect getChallenges to be called exactly once for each domain.
+	if challengeFetchCount != 2 {
+		t.Errorf("Wrong challenge fetch count: expected 2, got %d", challengeFetchCount)
+	}
 }

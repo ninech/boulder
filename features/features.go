@@ -12,7 +12,6 @@ type FeatureFlag int
 const (
 	unused FeatureFlag = iota // unused is used for testing
 	UseAIAIssuerURL
-	AllowTLS02Challenges
 	// For new-authz requests, if there is no valid authz, but there is a pending
 	// authz, return that instead of creating a new one.
 	ReusePendingAuthz
@@ -21,24 +20,49 @@ const (
 	AllowRenewalFirstRL
 	// Allow issuance of wildcard domains for ACMEv2
 	WildcardDomains
+	// Copy authz status to challenge status
+	ForceConsistentStatus
 	// Enforce prevention of use of disabled challenge types
 	EnforceChallengeDisable
+	// Ensure there is headroom in RPC timeouts to return an error to the client
+	RPCHeadroom
 	// Allow TLS-SNI in new-authz that are revalidating for previous issuance
 	TLSSNIRevalidation
+	EmbedSCTs
+	// CancelCTSubmissions is deprecated
+	CancelCTSubmissions
+	VAChecksGSB
+	// Return errors to ACMEv2 clients that do not send the correct JWS
+	// Content-Type header
+	EnforceV2ContentType
+	// Reject new-orders that contain a hostname redundant with a wildcard.
+	EnforceOverlappingWildcards
+	// Set orders to status "ready" when they are awaiting finalization
+	OrderReadyStatus
+	// Check CAA and respect validation-methods parameter.
+	CAAValidationMethods
 )
 
 // List of features and their default value, protected by fMu
 var features = map[FeatureFlag]bool{
-	unused:                  false,
-	UseAIAIssuerURL:         false,
-	AllowTLS02Challenges:    false,
-	ReusePendingAuthz:       false,
-	CountCertificatesExact:  false,
-	IPv6First:               false,
-	AllowRenewalFirstRL:     false,
-	WildcardDomains:         false,
-	EnforceChallengeDisable: false,
-	TLSSNIRevalidation:      false,
+	unused:                      false,
+	UseAIAIssuerURL:             false,
+	ReusePendingAuthz:           false,
+	CountCertificatesExact:      false,
+	IPv6First:                   false, // deprecated
+	AllowRenewalFirstRL:         false,
+	WildcardDomains:             false,
+	EnforceChallengeDisable:     false, // deprecated
+	RPCHeadroom:                 false,
+	TLSSNIRevalidation:          false,
+	EmbedSCTs:                   false,
+	CancelCTSubmissions:         true, // deprecated
+	VAChecksGSB:                 false,
+	EnforceV2ContentType:        false,
+	ForceConsistentStatus:       false,
+	EnforceOverlappingWildcards: false,
+	OrderReadyStatus:            false,
+	CAAValidationMethods:        false,
 }
 
 var fMu = new(sync.RWMutex)

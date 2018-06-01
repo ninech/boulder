@@ -1,0 +1,4 @@
+FROM golang:%%GO_VERSION%%
+
+ADD build.sh /tmp/build.sh
+RUN /tmp/build.sh

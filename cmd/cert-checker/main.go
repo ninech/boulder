@@ -24,23 +24,36 @@ import (
 	"github.com/letsencrypt/boulder/metrics"
 	"github.com/letsencrypt/boulder/policy"
 	"github.com/letsencrypt/boulder/sa"
+
+	lintasn1 "github.com/globalsign/certlint/asn1"
+	"github.com/globalsign/certlint/certdata"
+	"github.com/globalsign/certlint/checks"
+	_ "github.com/globalsign/certlint/checks/certificate/all"
+	_ "github.com/globalsign/certlint/checks/extensions/all"
 )
 
 const (
 	good = "valid"
 	bad  = "invalid"
 
+	certlintCNError = "commonName field is deprecated"
+
 	filenameLayout = "20060102"
 
 	expectedValidityPeriod = time.Hour * 24 * 90
 )
+
+// certlintPSLErrPattern is a regex for matching Certlint error strings
+// complaining about a CN or SAN matching a public suffix list entry.
+var certlintPSLErrPattern = regexp.MustCompile(
+	`^Certificate (?:CommonName|subjectAltName) "[a-z0-9*][a-z0-9-.]+" ` +
+		`equals "[a-z0-9][a-z0-9-.]+" from the public suffix list$`)
 
 // For defense-in-depth in addition to using the PA & its hostnamePolicy to
 // check domain names we also perform a check against the regex's from the
 // forbiddenDomains array
 var forbiddenDomainPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`^\s*$`),
-	regexp.MustCompile(`\.mil$`),
 	regexp.MustCompile(`\.local$`),
 	regexp.MustCompile(`^localhost$`),
 	regexp.MustCompile(`\.localhost$`),
@@ -187,6 +200,43 @@ func (c *certChecker) checkCert(cert core.Certificate) (problems []string) {
 	// Check digests match
 	if cert.Digest != core.Fingerprint256(cert.DER) {
 		problems = append(problems, "Stored digest doesn't match certificate digest")
+	}
+
+	// Run linter
+	linter := new(lintasn1.Linter)
+	errs := linter.CheckStruct(cert.DER)
+	if errs != nil {
+		for _, err := range errs.List() {
+			problems = append(problems, err.Error())
+		}
+	}
+	d, err := certdata.Load(cert.DER)
+	if err != nil {
+		problems = append(problems, err.Error())
+	}
+	errs = checks.Certificate.Check(d)
+	if errs != nil {
+		for _, err := range errs.List() {
+			// commonName has been deprecated for years, but common practice is still
+			// to include it for compatibility reasons. For instance, Chrome on macOS
+			// until very recently would error on an empty Subject (which is what we
+			// would have if we omitted CommonName). There have been proposals at
+			// CA/Browser Forum for an alternate contentless field whose purpose would
+			// just be to make Subject non-empty, but so far they have not been
+			// successful. If the check error is `certlintCNError`, ignore it.
+			if err.Error() == certlintCNError {
+				continue
+			}
+			// certlint incorrectly flags certificates that have a subj. CN or SAN
+			// exactly equal to a *private* entry on the public suffix list. Since
+			// this is allowed and LE issues certificates for such names we ignore
+			// errors of this form until the upstream bug can be addressed. See
+			// https://github.com/globalsign/certlint/issues/17
+			if certlintPSLErrPattern.MatchString(err.Error()) {
+				continue
+			}
+			problems = append(problems, err.Error())
+		}
 	}
 
 	// Parse certificate
@@ -348,7 +398,7 @@ func main() {
 	// is finished it will close the certificate channel which allows the range
 	// loops in checker.processCerts to break
 	go func() {
-		err = checker.getCerts(config.CertChecker.UnexpiredOnly)
+		err := checker.getCerts(config.CertChecker.UnexpiredOnly)
 		cmd.FailOnError(err, "Batch retrieval of certificates failed")
 	}()
 

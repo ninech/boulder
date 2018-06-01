@@ -6,6 +6,7 @@ import (
 	safebrowsingv4 "github.com/google/safebrowsing"
 	"golang.org/x/net/context"
 
+	"github.com/letsencrypt/boulder/canceled"
 	bgrpc "github.com/letsencrypt/boulder/grpc"
 	vaPB "github.com/letsencrypt/boulder/va/proto"
 )
@@ -32,31 +33,41 @@ func (va *ValidationAuthorityImpl) IsSafeDomain(ctx context.Context, req *vaPB.I
 	if req == nil || req.Domain == nil {
 		return nil, bgrpc.ErrMissingParameters
 	}
+	status := va.isSafeDomain(ctx, *req.Domain)
+	return &vaPB.IsDomainSafe{IsSafe: &status}, nil
+}
+
+// isSafeDomain returns true if the VA considers the given domain safe. If the
+// backend errors, we consider the domain safe, so this function never returns
+// error.
+func (va *ValidationAuthorityImpl) isSafeDomain(ctx context.Context, domain string) bool {
 	stats := va.stats.NewScope("IsSafeDomain")
 	stats.Inc("IsSafeDomain.Requests", 1)
 	if va.safeBrowsing == nil {
 		stats.Inc("IsSafeDomain.Skips", 1)
-		status := true
-		return &vaPB.IsDomainSafe{IsSafe: &status}, nil
+		return true
 	}
 
-	var status bool
-	list, err := va.safeBrowsing.IsListed(ctx, *req.Domain)
+	list, err := va.safeBrowsing.IsListed(ctx, domain)
+	if canceled.Is(err) {
+		// Sometimes an IsListed request will be canceled because the main
+		// validation failed, causing the parent context to be canceled.
+		stats.Inc("IsSafeDomain.Canceled", 1)
+		return true
+	}
 	if err != nil {
 		stats.Inc("IsSafeDomain.Errors", 1)
 		// In the event of an error checking the GSB status we allow the domain in
 		// question to be treated as safe to avoid coupling the availability of the
 		// VA to the GSB API. This is acceptable for Let's Encrypt because we do not
 		// have a hard commitment to GSB filtering in our CP/CPS.
-		status = true
-	} else {
-		stats.Inc("IsSafeDomain.Successes", 1)
-		status = (list == "")
-		if status {
-			stats.Inc("IsSafeDomain.Status.Good", 1)
-		} else {
-			stats.Inc("IsSafeDomain.Status.Bad", 1)
-		}
+		return true
 	}
-	return &vaPB.IsDomainSafe{IsSafe: &status}, nil
+	stats.Inc("IsSafeDomain.Successes", 1)
+	if list == "" {
+		stats.Inc("IsSafeDomain.Status.Good", 1)
+		return true
+	}
+	stats.Inc("IsSafeDomain.Status.Bad", 1)
+	return false
 }

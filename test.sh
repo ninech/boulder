@@ -19,11 +19,6 @@ HARDFAIL=${HARDFAIL:-fmt godep-restore}
 
 FAILURE=0
 
-DEFAULT_TESTPATHS=$(go list -f '{{ .ImportPath }}' ./... | grep -v /vendor/)
-TESTPATHS=${TESTPATHS:-$DEFAULT_TESTPATHS}
-
-GITHUB_SECRET_FILE="/tmp/github-secret.json"
-
 start_context() {
   CONTEXT="$1"
   printf "[%16s] Starting\n" ${CONTEXT}
@@ -66,19 +61,12 @@ function run_and_expect_silence() {
   rm ${result_file}
 }
 
-function die() {
-  if [ ! -z "$1" ]; then
-    echo $1 > /dev/stderr
-  fi
-  exit 1
-}
-
 function run_unit_tests() {
   if [ "${TRAVIS}" == "true" ]; then
     # Run the full suite of tests once with the -race flag. Since this isn't
     # running tests individually we can't collect coverage information.
     echo "running test suite with race detection"
-    run go test -race -p 1 ${TESTPATHS}
+    run go test -race -p 1 ./...
   else
     # When running locally, we skip the -race flag for speedier test runs. We
     # also pass -p 1 to require the tests to run serially instead of in
@@ -87,7 +75,7 @@ function run_unit_tests() {
     # spuriously because one test is modifying a table (especially
     # registrations) while another test is reading it.
     # https://github.com/letsencrypt/boulder/issues/1499
-    run go test -p 1 $GOTESTFLAGS ${TESTPATHS}
+    run go test -p 1 $GOTESTFLAGS ./...
   fi
 }
 
@@ -97,10 +85,7 @@ function run_test_coverage() {
   # -race in `run_unit_tests` and it adds substantial overhead to run every
   # test with -race independently
   echo "running test suite with coverage enabled and without race detection"
-  for path in ${TESTPATHS}; do
-    dir=$(basename $path)
-    run go test -cover -coverprofile=${dir}.coverprofile ${path}
-  done
+  run go test -p 1 -cover -coverprofile=${dir}.coverprofile ./...
 
   # Gather all the coverprofiles
   run gover
@@ -116,7 +101,7 @@ function run_test_coverage() {
 #
 if [[ "$RUN" =~ "vet" ]] ; then
   start_context "vet"
-  run_and_expect_silence go vet ${TESTPATHS}
+  run_and_expect_silence go vet ./...
   end_context #vet
 fi
 
@@ -184,22 +169,9 @@ if [[ "$RUN" =~ "integration" ]] ; then
   start_context "integration"
 
   source ${CERTBOT_PATH:-/certbot}/${VENV_NAME:-venv}/bin/activate
-  REQUESTS_CA_BUNDLE=test/wfe-tls/minica.pem DIRECTORY=http://boulder:4000/directory \
-    run python2 test/integration-test.py --chisel
+  DIRECTORY=http://boulder:4000/directory \
+    run python2 test/integration-test.py --chisel --load
   end_context #integration
-fi
-
-if [[ "$RUN" =~ "acme-v2" ]] ; then
-  # If you're developing against a local Certbot repo, edit docker-compose.yml
-  # to mount it as a volume under /certbot, and run tests with
-  # docker-compose run -e RUN=acme-v2 -e CERTBOT_REPO=/certbot boulder ./test.sh
-  CERTBOT_REPO=${CERTBOT_REPO:-https://github.com/certbot/certbot}
-  CERTBOT_DIR=$(mktemp -d -t certbotXXXX)
-  git clone $CERTBOT_REPO $CERTBOT_DIR
-  (cd $CERTBOT_DIR ; git checkout acme-v2-integration; ./tools/venv.sh)
-  source $CERTBOT_DIR/venv/bin/activate
-  REQUESTS_CA_BUNDLE=test/wfe-tls/minica.pem DIRECTORY=https://boulder:4431/directory \
-    run python2 test/integration-test-v2.py
 fi
 
 # Run godep-restore (happens only in Travis) to check that the hashes in
@@ -227,8 +199,8 @@ fi
 if [[ "$RUN" =~ "errcheck" ]] ; then
   start_context "errcheck"
   run_and_expect_silence errcheck \
-    -ignore io:Write,os:Remove,net/http:Write \
-    $(echo ${TESTPATHS} | tr ' ' '\n' | grep -v test)
+    -ignore fmt:Fprintf,fmt:Fprintln,fmt:Fprint,io:Write,os:Remove,net/http:Write \
+    $(go list -f '{{ .ImportPath }}' ./... | grep -v test)
   end_context #errcheck
 fi
 
@@ -249,7 +221,7 @@ if [[ "$RUN" =~ "generate" ]] ; then
   #     github.com/letsencrypt/boulder/probs)
   go install ./probs
   go install google.golang.org/grpc/codes
-  run_and_expect_silence go generate ${TESTPATHS}
+  run_and_expect_silence go generate ./...
   # Because the `mock` package we use to generate mocks does not properly
   # support vendored dependencies[0] we are forced to sed out any references to
   # the vendor directory that sneak into generated resources.

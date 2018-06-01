@@ -2,6 +2,7 @@ package log
 
 import (
 	"fmt"
+	"log"
 	"log/syslog"
 	"net"
 	"strings"
@@ -81,12 +82,25 @@ func TestEmitEmpty(t *testing.T) {
 }
 
 func ExampleLogger() {
-	impl := setup(nil)
+	// Write all logs to UDP on a high port so as to not bother the system
+	// which is running the test
+	writer, err := syslog.Dial("udp", "127.0.0.1:65530", syslog.LOG_INFO|syslog.LOG_LOCAL0, "")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	logger, err := New(writer, stdoutLevel, syslogLevel)
+	if err != nil {
+		log.Fatal(err)
+	}
+	impl, ok := logger.(*impl)
+	if !ok {
+		log.Fatalf("Wrong type returned from New: %T", logger)
+	}
 
 	bw, ok := impl.w.(*bothWriter)
 	if !ok {
-		fmt.Printf("Wrong type of impl's writer: %T\n", impl.w)
-		return
+		log.Fatalf("Wrong type of impl's writer: %T\n", impl.w)
 	}
 	bw.clk = clock.NewFake()
 	impl.AuditErr("Error Audit")
@@ -106,6 +120,12 @@ func TestSyslogMethods(t *testing.T) {
 	impl.Err("audit-logger_test.go: err")
 	impl.Info("audit-logger_test.go: info")
 	impl.Warning("audit-logger_test.go: warning")
+	impl.AuditInfof("audit-logger_test.go: %s", "audit-info")
+	impl.AuditErrf("audit-logger_test.go: %s", "audit-err")
+	impl.Debugf("audit-logger_test.go: %s", "debug")
+	impl.Errf("audit-logger_test.go: %s", "err")
+	impl.Infof("audit-logger_test.go: %s", "info")
+	impl.Warningf("audit-logger_test.go: %s", "warning")
 }
 
 func TestPanic(t *testing.T) {
@@ -178,7 +198,7 @@ func TestTransmission(t *testing.T) {
 
 	data := make([]byte, 128)
 
-	impl.AuditInfo("audit-logger_test.go: audit-notice")
+	impl.AuditInfo("audit-logger_test.go: audit-info")
 	_, _, err = l.ReadFrom(data)
 	test.AssertNotError(t, err, "Failed to find packet")
 
@@ -199,6 +219,30 @@ func TestTransmission(t *testing.T) {
 	test.AssertNotError(t, err, "Failed to find packet")
 
 	impl.Warning("audit-logger_test.go: warning")
+	_, _, err = l.ReadFrom(data)
+	test.AssertNotError(t, err, "Failed to find packet")
+
+	impl.AuditInfof("audit-logger_test.go: %s", "audit-info")
+	_, _, err = l.ReadFrom(data)
+	test.AssertNotError(t, err, "Failed to find packet")
+
+	impl.AuditErrf("audit-logger_test.go: %s", "audit-err")
+	_, _, err = l.ReadFrom(data)
+	test.AssertNotError(t, err, "Failed to find packet")
+
+	impl.Debugf("audit-logger_test.go: %s", "debug")
+	_, _, err = l.ReadFrom(data)
+	test.AssertNotError(t, err, "Failed to find packet")
+
+	impl.Errf("audit-logger_test.go: %s", "err")
+	_, _, err = l.ReadFrom(data)
+	test.AssertNotError(t, err, "Failed to find packet")
+
+	impl.Infof("audit-logger_test.go: %s", "info")
+	_, _, err = l.ReadFrom(data)
+	test.AssertNotError(t, err, "Failed to find packet")
+
+	impl.Warningf("audit-logger_test.go: %s", "warning")
 	_, _, err = l.ReadFrom(data)
 	test.AssertNotError(t, err, "Failed to find packet")
 }

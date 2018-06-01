@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"golang.org/x/net/context"
 
@@ -11,22 +12,23 @@ import (
 )
 
 type RequestEvent struct {
-	RealIP        string    `json:",omitempty"`
-	Endpoint      string    `json:",omitempty"`
-	Method        string    `json:",omitempty"`
-	Errors        []string  `json:",omitempty"`
-	Requester     int64     `json:",omitempty"`
-	Contacts      *[]string `json:",omitempty"`
-	RequestNonce  string    `json:",omitempty"`
-	ResponseNonce string    `json:",omitempty"`
-	UserAgent     string    `json:",omitempty"`
-	Code          int
-	Payload       string                 `json:",omitempty"`
-	Extra         map[string]interface{} `json:",omitempty"`
+	RealIP         string    `json:",omitempty"`
+	Endpoint       string    `json:",omitempty"`
+	Slug           string    `json:",omitempty"`
+	Method         string    `json:",omitempty"`
+	InternalErrors []string  `json:",omitempty"`
+	Error          string    `json:",omitempty"`
+	Requester      int64     `json:",omitempty"`
+	Contacts       *[]string `json:",omitempty"`
+	UserAgent      string    `json:",omitempty"`
+	Latency        float64
+	Code           int
+	Payload        string                 `json:",omitempty"`
+	Extra          map[string]interface{} `json:",omitempty"`
 }
 
 func (e *RequestEvent) AddError(msg string, args ...interface{}) {
-	e.Errors = append(e.Errors, fmt.Sprintf(msg, args...))
+	e.InternalErrors = append(e.InternalErrors, fmt.Sprintf(msg, args...))
 }
 
 type WFEHandlerFunc func(context.Context, *RequestEvent, http.ResponseWriter, *http.Request)
@@ -52,6 +54,19 @@ func NewTopHandler(log blog.Logger, wfe wfeHandler) *TopHandler {
 	}
 }
 
+// responseWriterWithStatus satisfies http.ResponseWriter, but keeps track of the
+// status code for logging.
+type responseWriterWithStatus struct {
+	http.ResponseWriter
+	code int
+}
+
+// WriteHeader stores a status code for generating stats.
+func (r *responseWriterWithStatus) WriteHeader(code int) {
+	r.code = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
 func (th *TopHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	logEvent := &RequestEvent{
 		RealIP:    r.Header.Get("X-Real-IP"),
@@ -59,24 +74,25 @@ func (th *TopHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		UserAgent: r.Header.Get("User-Agent"),
 		Extra:     make(map[string]interface{}, 0),
 	}
-	defer th.logEvent(logEvent)
 
-	th.wfe.ServeHTTP(logEvent, w, r)
+	begin := time.Now()
+	rwws := &responseWriterWithStatus{w, 0}
+	defer func() {
+		logEvent.Code = rwws.code
+		logEvent.Latency = float64(time.Since(begin)) / float64(time.Second)
+		th.logEvent(logEvent)
+	}()
+	th.wfe.ServeHTTP(logEvent, rwws, r)
 }
 
 func (th *TopHandler) logEvent(logEvent *RequestEvent) {
 	var msg string
-	if len(logEvent.Errors) != 0 {
-		msg = "Terminated request"
-	} else {
-		msg = "Successful request"
-	}
 	jsonEvent, err := json.Marshal(logEvent)
 	if err != nil {
-		th.log.AuditErr(fmt.Sprintf("%s - failed to marshal logEvent - %s", msg, err))
+		th.log.AuditErrf("failed to marshal logEvent - %s - %#v", msg, err)
 		return
 	}
-	th.log.Info(fmt.Sprintf("%s JSON=%s", msg, jsonEvent))
+	th.log.Infof("JSON=%s", jsonEvent)
 }
 
 // Comma-separated list of HTTP clients involved in making this

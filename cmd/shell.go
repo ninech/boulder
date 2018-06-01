@@ -64,7 +64,7 @@ type mysqlLogger struct {
 }
 
 func (m mysqlLogger) Print(v ...interface{}) {
-	m.AuditErr(fmt.Sprintf("[mysql] %s", fmt.Sprint(v...)))
+	m.AuditErrf("[mysql] %s", fmt.Sprint(v...))
 }
 
 // cfsslLogger provides two additional methods that are expected by CFSSL's
@@ -101,7 +101,7 @@ func (log grpcLogger) Print(args ...interface{}) {
 	log.AuditErr(fmt.Sprint(args...))
 }
 func (log grpcLogger) Printf(format string, args ...interface{}) {
-	log.AuditErr(fmt.Sprintf(format, args...))
+	log.AuditErrf(format, args...)
 }
 func (log grpcLogger) Println(args ...interface{}) {
 	log.AuditErr(fmt.Sprintln(args...))
@@ -157,19 +157,21 @@ func newScope(addr string, logger blog.Logger) metrics.Scope {
 	registry.MustRegister(prometheus.NewProcessCollector(os.Getpid(), ""))
 
 	mux := http.NewServeMux()
-	// Register each of the available pprof handlers. These are all registered on
+	// Register the available pprof handlers. These are all registered on
 	// DefaultServeMux just by importing pprof, but since we eschew
 	// DefaultServeMux, we need to explicitly register them on our own mux.
-	reg := func(name string) {
-		mux.Handle("/debug/pprof/"+name, pprof.Handler(name))
-	}
-	reg("block")
-	reg("goroutine")
-	reg("heap")
-	reg("mutex")
-	reg("profile")
-	reg("threadcreate")
-	reg("trace")
+	mux.Handle("/debug/pprof/", http.HandlerFunc(pprof.Index))
+	mux.Handle("/debug/pprof/profile", http.HandlerFunc(pprof.Profile))
+	mux.Handle("/debug/pprof/symbol", http.HandlerFunc(pprof.Symbol))
+	mux.Handle("/debug/pprof/trace", http.HandlerFunc(pprof.Trace))
+	// These handlers are defined in runtime/pprof instead of net/http/pprof, and
+	// have to be accessed through net/http/pprof's Handler func.
+	mux.Handle("/debug/pprof/goroutine", pprof.Handler("goroutine"))
+	mux.Handle("/debug/pprof/block", pprof.Handler("block"))
+	mux.Handle("/debug/pprof/heap", pprof.Handler("heap"))
+	mux.Handle("/debug/pprof/mutex", pprof.Handler("mutex"))
+	mux.Handle("/debug/pprof/threadcreate", pprof.Handler("threadcreate"))
+
 	mux.Handle("/debug/vars", expvar.Handler())
 	mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{
 		ErrorLog: promLogger{logger},
@@ -188,13 +190,20 @@ func newScope(addr string, logger blog.Logger) metrics.Scope {
 	return metrics.NewPromScope(registry)
 }
 
-// FailOnError exits and prints an error message if we encountered a problem
+// Fail exits and prints an error message to stderr and the logger audit log.
+func Fail(msg string) {
+	logger := blog.Get()
+	logger.AuditErr(msg)
+	fmt.Fprintf(os.Stderr, msg)
+	os.Exit(1)
+}
+
+// FailOnError exits and prints an error message, but only if we encountered
+// a problem and err != nil
 func FailOnError(err error, msg string) {
 	if err != nil {
-		logger := blog.Get()
-		logger.AuditErr(fmt.Sprintf("%s: %s", msg, err))
-		fmt.Fprintf(os.Stderr, "%s: %s\n", msg, err)
-		os.Exit(1)
+		msg := fmt.Sprintf("%s: %s", msg, err)
+		Fail(msg)
 	}
 }
 
@@ -253,7 +262,7 @@ func CatchSignals(logger blog.Logger, callback func()) {
 
 	sig := <-sigChan
 	if logger != nil {
-		logger.Info(fmt.Sprintf("Caught %s", signalToName[sig]))
+		logger.Infof("Caught %s", signalToName[sig])
 	}
 
 	if callback != nil {

@@ -20,8 +20,8 @@ in that directory:
     git clone https://github.com/letsencrypt/boulder/ $GOPATH/src/github.com/letsencrypt/boulder
     cd $GOPATH/src/github.com/letsencrypt/boulder
 
-Additionally, make sure you have Docker Engine 1.10.0+ and Docker Compose
-1.6.0+ installed. If you do not, you can follow Docker's [installation
+Additionally, make sure you have Docker Engine 1.13.0+ and Docker Compose
+1.10.0+ installed. If you do not, you can follow Docker's [installation
 instructions](https://docs.docker.com/compose/install/).
 
 We recommend having **at least 2GB of RAM** available on your Docker host. In
@@ -39,11 +39,11 @@ To start Boulder in a Docker container, run:
 
 To run tests:
 
-    docker-compose run boulder ./test.sh
+    docker-compose run --use-aliases boulder ./test.sh
 
 To run a specific unittest:
 
-    docker-compose run boulder go test ./ra
+    docker-compose run --use-aliases boulder go test ./ra
 
 The configuration in docker-compose.yml mounts your
 [`$GOPATH`](https://golang.org/doc/code.html#GOPATH) on top of its own
@@ -71,7 +71,7 @@ match.
 
 Alternatively, you can override the docker-compose.yml default with an environmental variable using -e (replace 172.17.0.1 with the host IPv4 address found in the command above)
 
-    docker-compose run -e FAKE_DNS=172.17.0.1 --service-ports boulder ./start.py
+    docker-compose run --use-aliases -e FAKE_DNS=172.17.0.1 --service-ports boulder ./start.py
 
 Boulder's default VA configuration (`test/config/va.json`) is configured to
 connect to port 5002 to validate HTTP-01 challenges and port 5001 to validate
@@ -102,7 +102,7 @@ Boulder requires an installation of libtool-ltdl, goose, SoftHSM, and MariaDB 10
 
     docker-compose up -d bmysql bhsm
 
-Also, Boulder requires Go 1.9 or above. This version may not be
+Boulder is only supported on Go 1.10 or above. This version may not be
 available in OS repositories. If so, you will have to install from https://golang.org/dl/.
 Add ```${GOPATH}/bin``` to your path.
 
@@ -230,10 +230,15 @@ go get -u github.com/tools/godep
 godep restore
 # Clear the stored dependencies
 rm -r Godeps/ vendor/
-# Update to the latest version of a dependency. Alternately you can cd to the
-# directory under GOPATH and check out a specific revision. Here's an example
-# using cfssl:
-go get -u github.com/cloudflare/cfssl/...
+# Update to the latest version of a dependency. Note: Our integration tests will
+# verify that they can re-generate Godeps.json from scratch, which means that
+# it's important that you have the same set of tags in your local copy of any
+# repositories as the origin does. That means you can't use `go get -u`, you
+# must cd to the path and use `git remote update`, which fetches tags. Example:
+cd $GOPATH/src/github.com/cloudflare/cfssl
+git remote update
+git checkout master
+git pull origin master
 # Re-vendor the dependencies from scratch
 godep save ./...
 git commit Godeps/ vendor/

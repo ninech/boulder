@@ -29,6 +29,7 @@ import (
 )
 
 type certCountFunc func(domain string, earliest, latest time.Time) (int, error)
+type getChallengesFunc func(authID string) ([]core.Challenge, error)
 
 // SQLStorageAuthority defines a Storage Authority
 type SQLStorageAuthority struct {
@@ -42,9 +43,10 @@ type SQLStorageAuthority struct {
 	// threads).
 	parallelismPerRPC int
 
-	// We use a function type here so we can mock out this internal function in
+	// We use function types here so we can mock out this internal function in
 	// unittests.
 	countCertificatesByName certCountFunc
+	getChallenges           getChallengesFunc
 }
 
 func digest256(data []byte) []byte {
@@ -106,6 +108,7 @@ func NewSQLStorageAuthority(
 	}
 
 	ssa.countCertificatesByName = ssa.countCertificatesByNameImpl
+	ssa.getChallenges = ssa.getChallengesImpl
 
 	return ssa, nil
 }
@@ -232,8 +235,19 @@ func (ssa *SQLStorageAuthority) GetAuthorization(ctx context.Context, id string)
 
 // GetValidAuthorizations returns the latest authorization object for all
 // domain names from the parameters that the account has authorizations for.
-func (ssa *SQLStorageAuthority) GetValidAuthorizations(ctx context.Context, registrationID int64, names []string, now time.Time) (map[string]*core.Authorization, error) {
-	return ssa.getAuthorizations(ctx, authorizationTable, string(core.StatusValid), registrationID, names, now)
+func (ssa *SQLStorageAuthority) GetValidAuthorizations(
+	ctx context.Context,
+	registrationID int64,
+	names []string,
+	now time.Time) (map[string]*core.Authorization, error) {
+	return ssa.getAuthorizations(
+		ctx,
+		authorizationTable,
+		string(core.StatusValid),
+		registrationID,
+		names,
+		now,
+		false)
 }
 
 // incrementIP returns a copy of `ip` incremented at a bit index `index`,
@@ -873,7 +887,12 @@ func (ssa *SQLStorageAuthority) RevokeAuthorizationsByDomain(ctx context.Context
 
 // AddCertificate stores an issued certificate and returns the digest as
 // a string, or an error if any occurred.
-func (ssa *SQLStorageAuthority) AddCertificate(ctx context.Context, certDER []byte, regID int64, ocspResponse []byte) (string, error) {
+func (ssa *SQLStorageAuthority) AddCertificate(
+	ctx context.Context,
+	certDER []byte,
+	regID int64,
+	ocspResponse []byte,
+	issued *time.Time) (string, error) {
 	parsedCertificate, err := x509.ParseCertificate(certDER)
 	if err != nil {
 		return "", err
@@ -886,7 +905,7 @@ func (ssa *SQLStorageAuthority) AddCertificate(ctx context.Context, certDER []by
 		Serial:         serial,
 		Digest:         digest,
 		DER:            certDER,
-		Issued:         ssa.clk.Now(),
+		Issued:         *issued,
 		Expires:        parsedCertificate.NotAfter,
 	}
 
@@ -941,23 +960,6 @@ func (ssa *SQLStorageAuthority) AddCertificate(ctx context.Context, certDER []by
 	return digest, tx.Commit()
 }
 
-// CountCertificatesRange returns the number of certificates issued in a specific
-// date range
-func (ssa *SQLStorageAuthority) CountCertificatesRange(ctx context.Context, start, end time.Time) (int64, error) {
-	var count int64
-	err := ssa.dbMap.SelectOne(
-		&count,
-		`SELECT COUNT(1) FROM certificates
-		WHERE issued >= :windowLeft
-		AND issued < :windowRight`,
-		map[string]interface{}{
-			"windowLeft":  start,
-			"windowRight": end,
-		},
-	)
-	return count, err
-}
-
 // CountPendingAuthorizations returns the number of pending, unexpired
 // authorizations for the given registration.
 func (ssa *SQLStorageAuthority) CountPendingAuthorizations(ctx context.Context, regID int64) (count int, err error) {
@@ -974,41 +976,21 @@ func (ssa *SQLStorageAuthority) CountPendingAuthorizations(ctx context.Context, 
 	return
 }
 
-// CountPendingOrders returns the number of pending, unexpired
-// orders for the given registration.
-func (ssa *SQLStorageAuthority) CountPendingOrders(ctx context.Context, regID int64) (int, error) {
+func (ssa *SQLStorageAuthority) CountOrders(ctx context.Context, acctID int64, earliest, latest time.Time) (int, error) {
 	var count int
-
-	// Find all of the unexpired order IDs for the given account
-	var orderIDs []int64
-	_, err := ssa.dbMap.Select(&orderIDs,
-		`SELECT ID FROM orders
-		WHERE registrationID = :regID AND
-		expires > :now`,
+	err := ssa.dbMap.SelectOne(&count,
+		`SELECT count(1) FROM orders
+		WHERE registrationID = :acctID AND
+		created >= :windowLeft AND
+		created < :windowRight`,
 		map[string]interface{}{
-			"regID": regID,
-			"now":   ssa.clk.Now(),
+			"acctID":      acctID,
+			"windowLeft":  earliest,
+			"windowRight": latest,
 		})
 	if err != nil {
 		return 0, err
 	}
-
-	// Iterate the order IDs, fetching the full order & associated authorizations
-	// for each
-	// TODO(@cpu): This is not performant and we should optimize:
-	//  https://github.com/letsencrypt/boulder/issues/3410
-	for _, orderID := range orderIDs {
-		order, err := ssa.GetOrder(ctx, &sapb.OrderRequest{Id: &orderID})
-		if err != nil {
-			return 0, err
-		}
-
-		// If the order is pending, increment the pending count
-		if *order.Status == string(core.StatusPending) {
-			count++
-		}
-	}
-
 	return count, nil
 }
 
@@ -1254,7 +1236,7 @@ func (ssa *SQLStorageAuthority) getNewIssuancesByFQDNSet(fqdnSets []setHash, ear
 	// If there are no results we have encountered a major error and
 	// should loudly complain
 	if err == sql.ErrNoRows || len(results) == 0 {
-		ssa.log.AuditErr(fmt.Sprintf("Found no results from fqdnSets for setHashes known to exist: %#v", fqdnSets))
+		ssa.log.AuditErrf("Found no results from fqdnSets for setHashes known to exist: %#v", fqdnSets)
 		return 0, err
 	}
 
@@ -1419,6 +1401,7 @@ func (ssa *SQLStorageAuthority) NewOrder(ctx context.Context, req *corepb.Order)
 	order := &orderModel{
 		RegistrationID: *req.RegistrationID,
 		Expires:        time.Unix(0, *req.Expires),
+		Created:        ssa.clk.Now(),
 	}
 
 	tx, err := ssa.dbMap.Begin()
@@ -1462,13 +1445,31 @@ func (ssa *SQLStorageAuthority) NewOrder(ctx context.Context, req *corepb.Order)
 
 	// Update the request with the ID that the order received
 	req.Id = &order.ID
-
-	// Update the request with pending status (No need to calculate the status
-	// based on authzs here, we know a brand new order is always pending)
-	pendingStatus := string(core.StatusPending)
-	req.Status = &pendingStatus
+	// Update the request with the created timestamp from the model
+	createdTS := order.Created.UnixNano()
+	req.Created = &createdTS
+	// A new order is never processing because it can't have been finalized yet
 	processingStatus := false
 	req.BeganProcessing = &processingStatus
+
+	// If the OrderReadyStatus feature is enabled we need to calculate the order
+	// status before returning it. Since it may have reused all valid
+	// authorizations the order may be "born" in a ready status.
+	if features.Enabled(features.OrderReadyStatus) {
+		// Calculate the status for the order
+		status, err := ssa.statusForOrder(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		req.Status = &status
+	} else {
+		// Update the request with pending status (No need to calculate the status
+		// based on authzs here, we know a brand new order is always pending when
+		// features.OrderReadyStatus isn't enabled)
+		pendingStatus := string(core.StatusPending)
+		req.Status = &pendingStatus
+	}
+	// Return the new order
 	return req, nil
 }
 
@@ -1497,6 +1498,38 @@ func (ssa *SQLStorageAuthority) SetOrderProcessing(ctx context.Context, req *cor
 	n, err := result.RowsAffected()
 	if err != nil || n == 0 {
 		err = berrors.InternalServerError("no order updated to beganProcessing status")
+		return Rollback(tx, err)
+	}
+
+	return tx.Commit()
+}
+
+// SetOrderError updates a provided Order's error field.
+func (ssa *SQLStorageAuthority) SetOrderError(ctx context.Context, order *corepb.Order) error {
+	tx, err := ssa.dbMap.Begin()
+	if err != nil {
+		return err
+	}
+
+	om, err := orderToModel(order)
+	if err != nil {
+		return err
+	}
+
+	result, err := tx.Exec(`
+		UPDATE orders
+		SET error = ?
+		WHERE id = ?`,
+		om.Error,
+		om.ID)
+	if err != nil {
+		err = berrors.InternalServerError("error updating order error field")
+		return Rollback(tx, err)
+	}
+
+	n, err := result.RowsAffected()
+	if err != nil || n == 0 {
+		err = berrors.InternalServerError("no order updated with new error field")
 		return Rollback(tx, err)
 	}
 
@@ -1572,7 +1605,10 @@ func (ssa *SQLStorageAuthority) GetOrder(ctx context.Context, req *sapb.OrderReq
 	if err != nil {
 		return nil, err
 	}
-	order := modelToOrder(omObj.(*orderModel))
+	order, err := modelToOrder(omObj.(*orderModel))
+	if err != nil {
+		return nil, err
+	}
 	authzIDs, err := ssa.authzForOrder(*order.Id)
 	if err != nil {
 		return nil, err
@@ -1606,7 +1642,9 @@ func (ssa *SQLStorageAuthority) GetOrder(ctx context.Context, req *sapb.OrderReq
 
 // statusForOrder examines the status of a provided order's authorizations to
 // determine what the overall status of the order should be. In summary:
+//   * If the order has an error, the order is invalid
 //   * If any of the order's authorizations are invalid, the order is invalid.
+//   * If any of the order's authorizations are expired, the order is invalid.
 //   * If any of the order's authorizations are deactivated, the order is deactivated.
 //   * If any of the order's authorizations are pending, the order is pending.
 //   * If all of the order's authorizations are valid, and there is
@@ -1614,9 +1652,16 @@ func (ssa *SQLStorageAuthority) GetOrder(ctx context.Context, req *sapb.OrderReq
 //   * If all of the order's authorizations are valid, and we have began
 //     processing, but there is no certificate serial, the order is processing.
 //   * If all of the order's authorizations are valid, and we haven't begun
-//     processing, then the order is pending waiting a finalization request.
+//     processing, then the order is status ready (if
+//     `features.OrderReadyStatus` is enabled) or status processing otherwise.
+//     In both cases it is awaiting a finalization request.
 // An error is returned for any other case.
 func (ssa *SQLStorageAuthority) statusForOrder(ctx context.Context, order *corepb.Order) (string, error) {
+	// Without any further work we know an order with an error is invalid
+	if order.Error != nil {
+		return string(core.StatusInvalid), nil
+	}
+
 	// Get the full Authorization objects for the order
 	authzs, err := ssa.getAllOrderAuthorizations(ctx, *order.Id, *order.RegistrationID)
 	// If there was an error getting the authorizations, return it immediately
@@ -1624,18 +1669,19 @@ func (ssa *SQLStorageAuthority) statusForOrder(ctx context.Context, order *corep
 		return "", err
 	}
 
-	// If GetOrderAuthorizations returned a different number of authorization
+	// If getAllOrderAuthorizations returned a different number of authorization
 	// objects than the order's slice of authorization IDs something has gone
 	// wrong worth raising an internal error about.
 	if len(authzs) != len(order.Authorizations) {
 		return "", berrors.InternalServerError(
-			"GetOrderAuthorizations returned the wrong number of authorizations "+
+			"getAllOrderAuthorizations returned the wrong number of authorizations "+
 				"(%d vs expected %d) for order %d",
 			len(authzs), len(order.Authorizations), *order.Id)
 	}
 
 	// Keep a count of the authorizations seen
 	invalidAuthzs := 0
+	expiredAuthzs := 0
 	deactivatedAuthzs := 0
 	pendingAuthzs := 0
 	validAuthzs := 0
@@ -1656,10 +1702,17 @@ func (ssa *SQLStorageAuthority) statusForOrder(ctx context.Context, order *corep
 				"Order is in an invalid state. Authz %s has invalid status %q",
 				authz.ID, authz.Status)
 		}
+		if authz.Expires.Before(ssa.clk.Now()) {
+			expiredAuthzs++
+		}
 	}
 
 	// An order is invalid if **any** of its authzs are invalid
 	if invalidAuthzs > 0 {
+		return string(core.StatusInvalid), nil
+	}
+	// An order is invalid if **any** of its authzs are expired
+	if expiredAuthzs > 0 {
 		return string(core.StatusInvalid), nil
 	}
 	// An order is deactivated if **any** of its authzs are deactivated
@@ -1698,9 +1751,16 @@ func (ssa *SQLStorageAuthority) statusForOrder(ctx context.Context, order *corep
 	}
 
 	// If the order is fully authorized, and we haven't begun processing it, then
-	// the order is still pending waiting a finalization request.
+	// the order is pending finalization and either status ready or status pending
+	// depending on the `OrderReadyStatus` feature flag. Historically we used
+	// "Pending" for this state but the ACME specification > draft-10 uses a new
+	// "Ready" state.
 	if fullyAuthorized && order.BeganProcessing != nil && !*order.BeganProcessing {
-		return string(core.StatusPending), nil
+		if features.Enabled(features.OrderReadyStatus) {
+			return string(core.StatusReady), nil
+		} else {
+			return string(core.StatusPending), nil
+		}
 	}
 
 	return "", berrors.InternalServerError(
@@ -1711,7 +1771,6 @@ func (ssa *SQLStorageAuthority) statusForOrder(ctx context.Context, order *corep
 func (ssa *SQLStorageAuthority) getAllOrderAuthorizations(
 	ctx context.Context,
 	orderID, acctID int64) (map[string]*core.Authorization, error) {
-	now := ssa.clk.Now()
 	var allAuthzs []*core.Authorization
 
 	for _, table := range authorizationTables {
@@ -1722,10 +1781,8 @@ func (ssa *SQLStorageAuthority) getAllOrderAuthorizations(
 		INNER JOIN orderToAuthz
 		ON authz.ID = orderToAuthz.authzID
 		WHERE authz.registrationID = ? AND
-		authz.expires > ? AND
 		orderToAuthz.orderID = ?`, authzFields, table),
 			acctID,
-			now,
 			orderID)
 		if err != nil {
 			return nil, err
@@ -1754,12 +1811,11 @@ func (ssa *SQLStorageAuthority) getAllOrderAuthorizations(
 	return byName, nil
 }
 
-// TODO(@cpu): Rename this to `GetValidOrderAuthorizations`
-// GetOrderAuthorizations is used to find the valid, unexpired authorizations
+// GetValidOrderAuthorizations is used to find the valid, unexpired authorizations
 // associated with a specific order and account ID.
-func (ssa *SQLStorageAuthority) GetOrderAuthorizations(
+func (ssa *SQLStorageAuthority) GetValidOrderAuthorizations(
 	ctx context.Context,
-	req *sapb.GetOrderAuthorizationsRequest) (map[string]*core.Authorization, error) {
+	req *sapb.GetValidOrderAuthorizationsRequest) (map[string]*core.Authorization, error) {
 	now := ssa.clk.Now()
 	// Select the full authorization data for all *valid, unexpired*
 	// authorizations that are owned by the correct account ID and associated with
@@ -1792,12 +1848,10 @@ func (ssa *SQLStorageAuthority) GetOrderAuthorizations(
 		}
 		existing, present := byName[auth.Identifier.Value]
 		if !present || auth.Expires.After(*existing.Expires) {
-			if features.Enabled(features.EnforceChallengeDisable) {
-				// Retrieve challenges for the authz
-				auth.Challenges, err = ssa.getChallenges(auth.ID)
-				if err != nil {
-					return nil, err
-				}
+			// Retrieve challenges for the authz
+			auth.Challenges, err = ssa.getChallenges(auth.ID)
+			if err != nil {
+				return nil, err
 			}
 
 			byName[auth.Identifier.Value] = auth
@@ -1847,8 +1901,14 @@ func (ssa *SQLStorageAuthority) GetOrderForNames(
 	return order, nil
 }
 
-func (ssa *SQLStorageAuthority) getAuthorizations(ctx context.Context, table string, status string,
-	registrationID int64, names []string, now time.Time) (map[string]*core.Authorization, error) {
+func (ssa *SQLStorageAuthority) getAuthorizations(
+	ctx context.Context,
+	table string,
+	status string,
+	registrationID int64,
+	names []string,
+	now time.Time,
+	requireV2Authzs bool) (map[string]*core.Authorization, error) {
 	if len(names) == 0 {
 		return nil, berrors.InternalServerError("no names received")
 	}
@@ -1865,14 +1925,25 @@ func (ssa *SQLStorageAuthority) getAuthorizations(ctx context.Context, table str
 		qmarks[i] = "?"
 	}
 
+	// If requested, filter out V1 authorizations by doing a JOIN on the
+	// orderToAuthz table, ensuring that all authorization IDs returned correspond
+	// to a V2 order.
+	queryPrefix := fmt.Sprintf(`SELECT %s FROM %s`, authzFields, table)
+	if requireV2Authzs {
+		queryPrefix = queryPrefix + `
+		JOIN orderToAuthz
+			ON ID = authzID`
+	}
+
 	var auths []*core.Authorization
 	_, err := ssa.dbMap.Select(
 		&auths,
-		fmt.Sprintf(`SELECT %s FROM %s
-	WHERE registrationID = ? AND
-	expires > ? AND
-	status = ? AND
-	identifier IN (%s)`, authzFields, table, strings.Join(qmarks, ",")),
+		fmt.Sprintf(`%s
+		WHERE registrationID = ? AND
+		expires > ? AND
+		status = ? AND
+		identifier IN (%s)`,
+			queryPrefix, strings.Join(qmarks, ",")),
 		append([]interface{}{registrationID, now, status}, params...)...)
 	if err != nil {
 		return nil, err
@@ -1891,23 +1962,34 @@ func (ssa *SQLStorageAuthority) getAuthorizations(ctx context.Context, table str
 		}
 		existing, present := byName[auth.Identifier.Value]
 		if !present || auth.Expires.After(*existing.Expires) {
-			if features.Enabled(features.EnforceChallengeDisable) {
-				// Retrieve challenges for the authz
-				auth.Challenges, err = ssa.getChallenges(auth.ID)
-				if err != nil {
-					return nil, err
-				}
-			}
-
 			byName[auth.Identifier.Value] = auth
+		}
+	}
+
+	for _, auth := range byName {
+		// Retrieve challenges for the authz
+		if auth.Challenges, err = ssa.getChallenges(auth.ID); err != nil {
+			return nil, err
 		}
 	}
 
 	return byName, nil
 }
 
-func (ssa *SQLStorageAuthority) getPendingAuthorizations(ctx context.Context, registrationID int64, names []string, now time.Time) (map[string]*core.Authorization, error) {
-	return ssa.getAuthorizations(ctx, pendingAuthorizationTable, string(core.StatusPending), registrationID, names, now)
+func (ssa *SQLStorageAuthority) getPendingAuthorizations(
+	ctx context.Context,
+	registrationID int64,
+	names []string,
+	now time.Time,
+	requireV2Authzs bool) (map[string]*core.Authorization, error) {
+	return ssa.getAuthorizations(
+		ctx,
+		pendingAuthorizationTable,
+		string(core.StatusPending),
+		registrationID,
+		names,
+		now,
+		requireV2Authzs)
 }
 
 func authzMapToPB(m map[string]*core.Authorization) (*sapb.Authorizations, error) {
@@ -1925,7 +2007,9 @@ func authzMapToPB(m map[string]*core.Authorization) (*sapb.Authorizations, error
 }
 
 // GetAuthorizations returns a map of valid or pending authorizations for as many names as possible
-func (ssa *SQLStorageAuthority) GetAuthorizations(ctx context.Context, req *sapb.GetAuthorizationsRequest) (*sapb.Authorizations, error) {
+func (ssa *SQLStorageAuthority) GetAuthorizations(
+	ctx context.Context,
+	req *sapb.GetAuthorizationsRequest) (*sapb.Authorizations, error) {
 	authzMap, err := ssa.getAuthorizations(
 		ctx,
 		authorizationTable,
@@ -1933,6 +2017,7 @@ func (ssa *SQLStorageAuthority) GetAuthorizations(ctx context.Context, req *sapb
 		*req.RegistrationID,
 		req.Domains,
 		time.Unix(0, *req.Now),
+		*req.RequireV2Authzs,
 	)
 	if err != nil {
 		return nil, err
@@ -1948,7 +2033,12 @@ func (ssa *SQLStorageAuthority) GetAuthorizations(ctx context.Context, req *sapb
 			remainingNames = append(remainingNames, name)
 		}
 	}
-	pendingAuthz, err := ssa.getPendingAuthorizations(ctx, *req.RegistrationID, remainingNames, time.Unix(0, *req.Now))
+	pendingAuthz, err := ssa.getPendingAuthorizations(
+		ctx,
+		*req.RegistrationID,
+		remainingNames,
+		time.Unix(0, *req.Now),
+		*req.RequireV2Authzs)
 	if err != nil {
 		return nil, err
 	}
@@ -1988,7 +2078,7 @@ func (ssa *SQLStorageAuthority) AddPendingAuthorizations(ctx context.Context, re
 	return &sapb.AuthorizationIDs{Ids: ids}, nil
 }
 
-func (ssa *SQLStorageAuthority) getChallenges(authID string) ([]core.Challenge, error) {
+func (ssa *SQLStorageAuthority) getChallengesImpl(authID string) ([]core.Challenge, error) {
 	var challObjs []challModel
 	_, err := ssa.dbMap.Select(
 		&challObjs,

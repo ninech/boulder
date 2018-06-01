@@ -14,13 +14,12 @@ service StorageAuthority {
         rpc GetValidAuthorizations(GetValidAuthorizationsRequest) returns (ValidAuthorizations) {}
         rpc GetCertificate(Serial) returns (core.Certificate) {}
         rpc GetCertificateStatus(Serial) returns (CertificateStatus) {}
-        rpc CountCertificatesRange(Range) returns (Count) {}
         rpc CountCertificatesByNames(CountCertificatesByNamesRequest) returns (CountByNames) {}
         rpc CountCertificatesByExactNames(CountCertificatesByNamesRequest) returns (CountByNames) {}
         rpc CountRegistrationsByIP(CountRegistrationsByIPRequest) returns (Count) {}
         rpc CountRegistrationsByIPRange(CountRegistrationsByIPRequest) returns (Count) {}
         rpc CountPendingAuthorizations(RegistrationID) returns (Count) {}
-        rpc CountPendingOrders(RegistrationID) returns (Count) {}
+        rpc CountOrders(CountOrdersRequest) returns (Count) {}
         // Return a count of authorizations with status "invalid" that belong to
         // a given registration ID and expire in the given time range.
         rpc CountInvalidAuthorizations(CountInvalidAuthorizationsRequest) returns (Count) {}
@@ -42,9 +41,10 @@ service StorageAuthority {
         rpc DeactivateAuthorization(AuthorizationID) returns (core.Empty) {}
         rpc NewOrder(core.Order) returns (core.Order) {}
         rpc SetOrderProcessing(core.Order) returns (core.Empty) {}
+        rpc SetOrderError(core.Order) returns (core.Empty) {}
         rpc FinalizeOrder(core.Order) returns (core.Empty) {}
         rpc GetOrder(OrderRequest) returns (core.Order) {}
-        rpc GetOrderAuthorizations(GetOrderAuthorizationsRequest) returns (Authorizations) {}
+        rpc GetValidOrderAuthorizations(GetValidOrderAuthorizationsRequest) returns (Authorizations) {}
         rpc GetOrderForNames(GetOrderForNamesRequest) returns (core.Order) {}
         rpc GetAuthorizations(GetAuthorizationsRequest) returns (Authorizations) {}
         rpc AddPendingAuthorizations(AddPendingAuthorizationsRequest) returns (AuthorizationIDs) {}
@@ -135,6 +135,11 @@ message CountInvalidAuthorizationsRequest {
         optional Range range = 3;
 }
 
+message CountOrdersRequest {
+        optional int64 accountID = 1;
+        optional Range range = 2;
+}
+
 message GetSCTReceiptRequest {
         optional string serial = 1;
         optional string logID = 2;
@@ -169,6 +174,10 @@ message AddCertificateRequest {
         // A signed OCSP response for the certificate contained in "der".
         // Note: The certificate status in the OCSP response is assumed to be 0 (good).
         optional bytes ocsp = 3;
+        // An optional issued time. When not present the SA defaults to using
+        // the current time. The orphan-finder uses this parameter to add
+        // certificates with the correct historic issued date
+        optional int64 issued = 4;
 }
 
 message AddCertificateResponse {
@@ -198,7 +207,7 @@ message OrderRequest {
         optional int64 id = 1;
 }
 
-message GetOrderAuthorizationsRequest {
+message GetValidOrderAuthorizationsRequest {
         optional int64 id = 1;
         optional int64 acctID = 2;
 }
@@ -212,6 +221,7 @@ message GetAuthorizationsRequest {
         optional int64 registrationID = 1;
         repeated string domains = 2;
         optional int64 now = 3; // Unix timestamp (nanoseconds)
+        optional bool requireV2Authzs = 4; // Do not include legacy V1 authzs
 }
 
 message Authorizations {

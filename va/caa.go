@@ -1,12 +1,14 @@
 package va
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
 
 	"github.com/letsencrypt/boulder/core"
 	corepb "github.com/letsencrypt/boulder/core/proto"
+	"github.com/letsencrypt/boulder/features"
 	"github.com/letsencrypt/boulder/probs"
 	vapb "github.com/letsencrypt/boulder/va/proto"
 	"github.com/miekg/dns"
@@ -20,7 +22,7 @@ func (va *ValidationAuthorityImpl) IsCAAValid(
 	prob := va.checkCAA(ctx, core.AcmeIdentifier{
 		Type:  core.IdentifierDNS,
 		Value: *req.Domain,
-	})
+	}, req.ValidationMethod)
 
 	if prob != nil {
 		typ := string(prob.Type)
@@ -39,19 +41,22 @@ func (va *ValidationAuthorityImpl) IsCAAValid(
 // the CAA lookup & validation fail a problem is returned.
 func (va *ValidationAuthorityImpl) checkCAA(
 	ctx context.Context,
-	identifier core.AcmeIdentifier) *probs.ProblemDetails {
-	present, valid, err := va.checkCAARecords(ctx, identifier)
+	identifier core.AcmeIdentifier,
+	challengeType *string) *probs.ProblemDetails {
+	present, valid, records, err := va.checkCAARecords(ctx, identifier, challengeType)
 	if err != nil {
-		return probs.ConnectionFailure(err.Error())
+		return probs.DNS("%v", err)
 	}
-	va.log.AuditInfo(fmt.Sprintf(
-		"Checked CAA records for %s, [Present: %t, Valid for issuance: %t]",
-		identifier.Value,
-		present,
-		valid,
-	))
+
+	recordsStr, err := json.Marshal(&records)
+	if err != nil {
+		return probs.CAA("CAA records for %s were malformed", identifier.Value)
+	}
+
+	va.log.AuditInfof("Checked CAA records for %s, [Present: %t, Valid for issuance: %t] Records=%s",
+		identifier.Value, present, valid, recordsStr)
 	if !valid {
-		return probs.CAA(fmt.Sprintf("CAA record for %s prevents issuance", identifier.Value))
+		return probs.CAA("CAA record for %s prevents issuance", identifier.Value)
 	}
 	return nil
 }
@@ -88,7 +93,7 @@ func newCAASet(CAAs []*dns.CAA) *CAASet {
 	var filtered CAASet
 
 	for _, caaRecord := range CAAs {
-		switch caaRecord.Tag {
+		switch strings.ToLower(caaRecord.Tag) {
 		case "issue":
 			filtered.Issue = append(filtered.Issue, caaRecord)
 		case "issuewild":
@@ -108,17 +113,17 @@ type caaResult struct {
 	err     error
 }
 
-func parseResults(results []caaResult) (*CAASet, error) {
+func parseResults(results []caaResult) (*CAASet, []*dns.CAA, error) {
 	// Return first result
 	for _, res := range results {
 		if res.err != nil {
-			return nil, res.err
+			return nil, nil, res.err
 		}
 		if len(res.records) > 0 {
-			return newCAASet(res.records), nil
+			return newCAASet(res.records), res.records, nil
 		}
 	}
-	return nil, nil
+	return nil, nil, nil
 }
 
 func (va *ValidationAuthorityImpl) parallelCAALookup(ctx context.Context, name string) []caaResult {
@@ -139,7 +144,7 @@ func (va *ValidationAuthorityImpl) parallelCAALookup(ctx context.Context, name s
 	return results
 }
 
-func (va *ValidationAuthorityImpl) getCAASet(ctx context.Context, hostname string) (*CAASet, error) {
+func (va *ValidationAuthorityImpl) getCAASet(ctx context.Context, hostname string) (*CAASet, []*dns.CAA, error) {
 	hostname = strings.TrimRight(hostname, ".")
 
 	// See RFC 6844 "Certification Authority Processing" for pseudocode, as
@@ -159,13 +164,16 @@ func (va *ValidationAuthorityImpl) getCAASet(ctx context.Context, hostname strin
 // validates them. If the identifier argument's value has a wildcard prefix then
 // the prefix is stripped and validation will be performed against the base
 // domain, honouring any issueWild CAA records encountered as apppropriate.
-// checkCAARecords returns three values: the first is a bool indicating whether
-// CAA records were present. The second is a bool indicating whether issuance
-// for the identifier is valid. Any errors encountered are returned as the third
-// return value (or nil).
+// checkCAARecords returns four values: the first is a bool indicating whether
+// CAA records were present after filtering for known/supported CAA tags. The
+// second is a bool indicating whether issuance for the identifier is valid. The
+// unmodified *dns.CAA records that were processed/filtered are returned as the
+// third argument. Any  errors encountered are returned as the fourth return
+// value (or nil).
 func (va *ValidationAuthorityImpl) checkCAARecords(
 	ctx context.Context,
-	identifier core.AcmeIdentifier) (present, valid bool, err error) {
+	identifier core.AcmeIdentifier,
+	challengeType *string) (bool, bool, []*dns.CAA, error) {
 	hostname := strings.ToLower(identifier.Value)
 	// If this is a wildcard name, remove the prefix
 	var wildcard bool
@@ -173,12 +181,21 @@ func (va *ValidationAuthorityImpl) checkCAARecords(
 		hostname = strings.TrimPrefix(identifier.Value, `*.`)
 		wildcard = true
 	}
-	caaSet, err := va.getCAASet(ctx, hostname)
+	caaSet, records, err := va.getCAASet(ctx, hostname)
 	if err != nil {
-		return false, false, err
+		return false, false, nil, err
 	}
-	present, valid = va.validateCAASet(caaSet, wildcard)
-	return present, valid, nil
+	present, valid := va.validateCAASet(caaSet, wildcard, challengeType)
+	return present, valid, records, nil
+}
+
+func containsMethod(commaSeparatedMethods, method string) bool {
+	for _, m := range strings.Split(commaSeparatedMethods, ",") {
+		if method == m {
+			return true
+		}
+	}
+	return false
 }
 
 // validateCAASet checks a provided *CAASet. When the wildcard argument is true
@@ -186,7 +203,7 @@ func (va *ValidationAuthorityImpl) checkCAARecords(
 // function returns two booleans: the first indicates whether the CAASet was
 // empty, the second indicates whether the CAASet is valid for issuance to
 // proceed.
-func (va *ValidationAuthorityImpl) validateCAASet(caaSet *CAASet, wildcard bool) (present, valid bool) {
+func (va *ValidationAuthorityImpl) validateCAASet(caaSet *CAASet, wildcard bool, challengeType *string) (present, valid bool) {
 	if caaSet == nil {
 		// No CAA records found, can issue
 		va.stats.Inc("CAA.None", 1)
@@ -233,10 +250,28 @@ func (va *ValidationAuthorityImpl) validateCAASet(caaSet *CAASet, wildcard bool)
 	//
 	// Our CAA identity must be found in the chosen checkSet.
 	for _, caa := range records {
-		if extractIssuerDomain(caa) == va.issuerDomain {
-			va.stats.Inc("CAA.Authorized", 1)
-			return true, true
+		caaIssuerDomain, caaParameters := extractIssuerDomainAndParameters(caa)
+		if caaIssuerDomain != va.issuerDomain {
+			continue
 		}
+
+		if features.Enabled(features.CAAValidationMethods) {
+			// Check the validation-methods CAA parameter as defined
+			// in section 4 of the draft CAA ACME RFC:
+			// https://tools.ietf.org/html/draft-ietf-acme-caa-03
+			caaMethods, ok := caaParameters["validation-methods"]
+			if ok {
+				if challengeType == nil {
+					continue
+				}
+				if !containsMethod(caaMethods, *challengeType) {
+					continue
+				}
+			}
+		}
+
+		va.stats.Inc("CAA.Authorized", 1)
+		return true, true
 	}
 
 	// The list of authorized issuers is non-empty, but we are not in it. Fail.
@@ -246,17 +281,23 @@ func (va *ValidationAuthorityImpl) validateCAASet(caaSet *CAASet, wildcard bool)
 
 // Given a CAA record, assume that the Value is in the issue/issuewild format,
 // that is, a domain name with zero or more additional key-value parameters.
-// Returns the domain name, which may be "" (unsatisfiable).
-func extractIssuerDomain(caa *dns.CAA) string {
-	v := caa.Value
-	v = strings.Trim(v, " \t") // Value can start and end with whitespace.
-	idx := strings.IndexByte(v, ';')
-	if idx < 0 {
-		return v // no parameters; domain only
+// Returns the domain name, which may be "" (unsatisfiable), and a tag-value map of parameters.
+func extractIssuerDomainAndParameters(caa *dns.CAA) (domain string, parameters map[string]string) {
+	isIssueSpace := func(r rune) bool {
+		return r == '\t' || r == ' '
 	}
 
-	// Currently, ignore parameters. Unfortunately, the RFC makes no statement on
-	// whether any parameters are critical. Treat unknown parameters as
-	// non-critical.
-	return strings.Trim(v[0:idx], " \t")
+	v := strings.SplitN(caa.Value, ";", 2)
+	domain = strings.TrimFunc(v[0], isIssueSpace)
+	parameters = make(map[string]string)
+
+	if len(v) == 2 {
+		for _, s := range strings.FieldsFunc(v[1], isIssueSpace) {
+			if kv := strings.SplitN(s, "=", 2); len(kv) == 2 {
+				parameters[kv[0]] = kv[1]
+			}
+		}
+	}
+
+	return domain, parameters
 }

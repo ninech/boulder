@@ -12,6 +12,7 @@ import (
 	"golang.org/x/net/context"
 
 	"github.com/letsencrypt/boulder/core"
+	"github.com/letsencrypt/boulder/features"
 	"github.com/letsencrypt/boulder/mocks"
 	"github.com/letsencrypt/boulder/probs"
 	"github.com/letsencrypt/boulder/test"
@@ -62,7 +63,7 @@ func pubKeyForKey(t *testing.T, privKey interface{}) interface{} {
 	case *ecdsa.PrivateKey:
 		return k.PublicKey
 	}
-	t.Fatal(fmt.Sprintf("Unable to get public key for private key %#v", privKey))
+	t.Fatalf("Unable to get public key for private key %#v", privKey)
 	return nil
 }
 
@@ -364,12 +365,13 @@ func TestValidPOSTRequest(t *testing.T) {
 	dummyContentLength := []string{"pretty long, idk, maybe a nibble or two?"}
 
 	testCases := []struct {
-		Name          string
-		Headers       map[string][]string
-		Body          *string
-		HTTPStatus    int
-		ProblemDetail string
-		ErrorStatType string
+		Name               string
+		Headers            map[string][]string
+		Body               *string
+		HTTPStatus         int
+		ProblemDetail      string
+		ErrorStatType      string
+		EnforceContentType bool
 	}{
 		// POST requests without a Content-Length should produce a problem
 		{
@@ -400,6 +402,31 @@ func TestValidPOSTRequest(t *testing.T) {
 			ProblemDetail: "No body on POST",
 			ErrorStatType: "NoPOSTBody",
 		},
+		{
+			Name: "POST without a Content-Type header",
+			Headers: map[string][]string{
+				"Content-Length": dummyContentLength,
+			},
+			HTTPStatus: http.StatusUnsupportedMediaType,
+			ProblemDetail: fmt.Sprintf(
+				"No Content-Type header on POST. Content-Type must be %q",
+				expectedJWSContentType),
+			ErrorStatType:      "NoContentType",
+			EnforceContentType: true,
+		},
+		{
+			Name: "POST with an invalid Content-Type header",
+			Headers: map[string][]string{
+				"Content-Length": dummyContentLength,
+				"Content-Type":   []string{"fresh.and.rare"},
+			},
+			HTTPStatus: http.StatusUnsupportedMediaType,
+			ProblemDetail: fmt.Sprintf(
+				"Invalid Content-Type header on POST. Content-Type must be %q",
+				expectedJWSContentType),
+			ErrorStatType:      "WrongContentType",
+			EnforceContentType: true,
+		},
 	}
 
 	for _, tc := range testCases {
@@ -409,6 +436,10 @@ func TestValidPOSTRequest(t *testing.T) {
 			Header: tc.Headers,
 		}
 		t.Run(tc.Name, func(t *testing.T) {
+			_ = features.Set(map[string]bool{
+				"EnforceV2ContentType": tc.EnforceContentType,
+			})
+			defer features.Reset()
 			prob := wfe.validPOSTRequest(input)
 			test.Assert(t, prob != nil, "No error returned for invalid POST")
 			test.AssertEquals(t, prob.Type, probs.MalformedProblem)
@@ -507,7 +538,7 @@ func TestEnforceJWSAuthType(t *testing.T) {
 			wfe.stats.joseErrorCount.Reset()
 			prob := wfe.enforceJWSAuthType(tc.JWS, tc.ExpectedAuthType)
 			if tc.ExpectedResult == nil && prob != nil {
-				t.Fatal(fmt.Sprintf("Expected nil result, got %#v", prob))
+				t.Fatalf("Expected nil result, got %#v", prob)
 			} else {
 				test.AssertMarshaledEquals(t, prob, tc.ExpectedResult)
 			}
@@ -575,9 +606,9 @@ func TestValidNonce(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.Name, func(t *testing.T) {
 			wfe.stats.joseErrorCount.Reset()
-			prob := wfe.validNonce(tc.JWS, newRequestEvent())
+			prob := wfe.validNonce(tc.JWS)
 			if tc.ExpectedResult == nil && prob != nil {
-				t.Fatal(fmt.Sprintf("Expected nil result, got %#v", prob))
+				t.Fatalf("Expected nil result, got %#v", prob)
 			} else {
 				test.AssertMarshaledEquals(t, prob, tc.ExpectedResult)
 			}
@@ -696,7 +727,7 @@ func TestValidPOSTURL(t *testing.T) {
 			wfe.stats.joseErrorCount.Reset()
 			prob := wfe.validPOSTURL(tc.Request, tc.JWS)
 			if tc.ExpectedResult == nil && prob != nil {
-				t.Fatal(fmt.Sprintf("Expected nil result, got %#v", prob))
+				t.Fatalf("Expected nil result, got %#v", prob)
 			} else {
 				test.AssertMarshaledEquals(t, prob, tc.ExpectedResult)
 			}
@@ -852,7 +883,7 @@ func TestParseJWSRequest(t *testing.T) {
 			wfe.stats.joseErrorCount.Reset()
 			_, prob := wfe.parseJWSRequest(tc.Request)
 			if tc.ExpectedProblem == nil && prob != nil {
-				t.Fatal(fmt.Sprintf("Expected nil problem, got %#v\n", prob))
+				t.Fatalf("Expected nil problem, got %#v\n", prob)
 			} else {
 				test.AssertMarshaledEquals(t, prob, tc.ExpectedProblem)
 			}
@@ -896,7 +927,7 @@ func TestExtractJWK(t *testing.T) {
 		t.Run(tc.Name, func(t *testing.T) {
 			jwk, prob := wfe.extractJWK(tc.JWS)
 			if tc.ExpectedProblem == nil && prob != nil {
-				t.Fatal(fmt.Sprintf("Expected nil problem, got %#v\n", prob))
+				t.Fatalf("Expected nil problem, got %#v\n", prob)
 			} else if tc.ExpectedProblem == nil {
 				test.AssertMarshaledEquals(t, jwk, tc.ExpectedKey)
 			} else {
@@ -906,13 +937,17 @@ func TestExtractJWK(t *testing.T) {
 	}
 }
 
-func signRequestBadKeyID(t *testing.T, nonceService jose.NonceSource) (*jose.JSONWebSignature, string) {
+func signRequestSpecifyKeyID(t *testing.T, keyID string, nonceService jose.NonceSource) (*jose.JSONWebSignature, string) {
 	privateKey := loadKey(t, []byte(test1KeyPrivatePEM))
+
+	if keyID == "" {
+		keyID = "this is an invalid non-numeric key ID"
+	}
 
 	jwk := &jose.JSONWebKey{
 		Key:       privateKey,
 		Algorithm: "RSA",
-		KeyID:     "this is an invalid non-numeric key ID",
+		KeyID:     keyID,
 	}
 
 	signerKey := jose.SigningKey{
@@ -944,13 +979,18 @@ func TestLookupJWK(t *testing.T) {
 	wfe, _ := setupWFE(t)
 
 	embeddedJWS, _, embeddedJWSBody := signRequestEmbed(t, nil, "", "", wfe.nonceService)
-	invalidKeyIDJWS, invalidKeyIDJWSBody := signRequestBadKeyID(t, wfe.nonceService)
+	invalidKeyIDJWS, invalidKeyIDJWSBody := signRequestSpecifyKeyID(t, "https://acme-99.lettuceencrypt.org/acme/reg/1", wfe.nonceService)
 	// ID 100 is mocked to return a non-missing error from sa.GetRegistration
 	errorIDJWS, _, errorIDJWSBody := signRequestKeyID(t, 100, nil, "", "", wfe.nonceService)
 	// ID 102 is mocked to return an account does not exist error from sa.GetRegistration
 	missingIDJWS, _, missingIDJWSBody := signRequestKeyID(t, 102, nil, "", "", wfe.nonceService)
 	// ID 3 is mocked to return a deactivated account from sa.GetRegistration
 	deactivatedIDJWS, _, deactivatedIDJWSBody := signRequestKeyID(t, 3, nil, "", "", wfe.nonceService)
+
+	wfe.LegacyKeyIDPrefix = "https://acme-v00.lettuceencrypt.org/acme/reg/"
+	legacyKeyIDJWS, legacyKeyIDJWSBody := signRequestSpecifyKeyID(t, wfe.LegacyKeyIDPrefix+"1", wfe.nonceService)
+
+	nonNumericKeyIDJWS, nonNumericKeyIDJWSBody := signRequestSpecifyKeyID(t, wfe.LegacyKeyIDPrefix+"abcd", wfe.nonceService)
 
 	validJWS, validKey, validJWSBody := signRequestKeyID(t, 1, nil, "", "", wfe.nonceService)
 	validAccount, _ := wfe.SA.GetRegistration(context.Background(), 1)
@@ -978,12 +1018,23 @@ func TestLookupJWK(t *testing.T) {
 			ErrorStatType: "JWSAuthTypeWrong",
 		},
 		{
-			Name:    "JWS with invalid key ID",
+			Name:    "JWS with invalid key ID URL",
 			JWS:     invalidKeyIDJWS,
 			Request: makePostRequestWithPath("test-path", invalidKeyIDJWSBody),
 			ExpectedProblem: &probs.ProblemDetails{
 				Type:       probs.MalformedProblem,
-				Detail:     "Malformed account ID in KeyID header",
+				Detail:     "KeyID header contained an invalid account URL",
+				HTTPStatus: http.StatusBadRequest,
+			},
+			ErrorStatType: "JWSInvalidKeyID",
+		},
+		{
+			Name:    "JWS with non-numeric account ID in key ID URL",
+			JWS:     nonNumericKeyIDJWS,
+			Request: makePostRequestWithPath("test-path", nonNumericKeyIDJWSBody),
+			ExpectedProblem: &probs.ProblemDetails{
+				Type:       probs.MalformedProblem,
+				Detail:     "Malformed account ID in KeyID header URL",
 				HTTPStatus: http.StatusBadRequest,
 			},
 			ErrorStatType: "JWSInvalidKeyID",
@@ -1022,6 +1073,13 @@ func TestLookupJWK(t *testing.T) {
 			ErrorStatType: "JWSKeyIDAccountInvalid",
 		},
 		{
+			Name:            "Valid JWS with legacy account ID",
+			JWS:             legacyKeyIDJWS,
+			Request:         makePostRequestWithPath("test-path", legacyKeyIDJWSBody),
+			ExpectedKey:     validKey,
+			ExpectedAccount: &validAccount,
+		},
+		{
 			Name:            "Valid JWS with valid account ID",
 			JWS:             validJWS,
 			Request:         makePostRequestWithPath("test-path", validJWSBody),
@@ -1035,7 +1093,7 @@ func TestLookupJWK(t *testing.T) {
 			inputLogEvent := newRequestEvent()
 			jwk, acct, prob := wfe.lookupJWK(tc.JWS, context.Background(), tc.Request, inputLogEvent)
 			if tc.ExpectedProblem == nil && prob != nil {
-				t.Fatal(fmt.Sprintf("Expected nil problem, got %#v\n", prob))
+				t.Fatalf("Expected nil problem, got %#v\n", prob)
 			} else if tc.ExpectedProblem == nil {
 				inThumb, _ := tc.ExpectedKey.Thumbprint(crypto.SHA256)
 				outThumb, _ := jwk.Thumbprint(crypto.SHA256)
@@ -1170,7 +1228,7 @@ func TestValidJWSForKey(t *testing.T) {
 			outPayload, prob := wfe.validJWSForKey(tc.JWS, tc.JWK, request, inputLogEvent)
 
 			if tc.ExpectedProblem == nil && prob != nil {
-				t.Fatal(fmt.Sprintf("Expected nil problem, got %#v\n", prob))
+				t.Fatalf("Expected nil problem, got %#v\n", prob)
 			} else if tc.ExpectedProblem == nil {
 				test.AssertEquals(t, inputLogEvent.Payload, payload)
 				test.AssertEquals(t, string(outPayload), payload)
@@ -1264,7 +1322,7 @@ func TestValidPOSTForAccount(t *testing.T) {
 			inputLogEvent := newRequestEvent()
 			outPayload, jws, acct, prob := wfe.validPOSTForAccount(tc.Request, context.Background(), inputLogEvent)
 			if tc.ExpectedProblem == nil && prob != nil {
-				t.Fatal(fmt.Sprintf("Expected nil problem, got %#v\n", prob))
+				t.Fatalf("Expected nil problem, got %#v\n", prob)
 			} else if tc.ExpectedProblem == nil {
 				test.AssertEquals(t, inputLogEvent.Payload, tc.ExpectedPayload)
 				test.AssertEquals(t, string(outPayload), tc.ExpectedPayload)
@@ -1368,7 +1426,7 @@ func TestValidSelfAuthenticatedPOST(t *testing.T) {
 			inputLogEvent := newRequestEvent()
 			outPayload, jwk, prob := wfe.validSelfAuthenticatedPOST(tc.Request, inputLogEvent)
 			if tc.ExpectedProblem == nil && prob != nil {
-				t.Fatal(fmt.Sprintf("Expected nil problem, got %#v\n", prob))
+				t.Fatalf("Expected nil problem, got %#v\n", prob)
 			} else if tc.ExpectedProblem == nil {
 				inThumb, _ := tc.ExpectedJWK.Thumbprint(crypto.SHA256)
 				outThumb, _ := jwk.Thumbprint(crypto.SHA256)

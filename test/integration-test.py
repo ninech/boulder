@@ -12,6 +12,7 @@ import requests
 import shutil
 import subprocess
 import signal
+import struct
 import sys
 import tempfile
 import time
@@ -21,9 +22,13 @@ import startservers
 
 import chisel
 from chisel import auth_and_issue
+from v2_integration import *
 
 import requests
 import OpenSSL
+
+from cryptography import x509
+from cryptography.hazmat.backends import default_backend
 
 class ProcInfo:
     """
@@ -36,7 +41,10 @@ class ProcInfo:
         self.cmd = cmd
         self.proc = proc
 
+caa_client = None
+caa_authzs = []
 old_authzs = []
+new_authzs = []
 
 def setup_seventy_days_ago():
     """Do any setup that needs to happen 70 days in the past, for tests that
@@ -46,6 +54,25 @@ def setup_seventy_days_ago():
     # later that they are expired (404).
     global old_authzs
     _, old_authzs = auth_and_issue([random_domain()])
+
+def setup_twenty_days_ago():
+    """Do any setup that needs to happen 20 day in the past, for tests that
+       will run in the 'present'.
+    """
+    # Issue a certificate with the clock set back, and save the authzs to check
+    # later that they are valid (200). They should however require rechecking for
+    # CAA purposes.
+    global caa_client
+    caa_client = chisel.make_client()
+    global caa_authzs
+    _, caa_authzs = auth_and_issue(["recheck.good-caa-reserved.com"], client=caa_client)
+
+def setup_zero_days_ago():
+    """Do any setup that needs to happen at the start of a test run."""
+    # Issue a certificate and save the authzs to check that they still exist
+    # at a later point.
+    global new_authzs
+    _, new_authzs = auth_and_issue([random_domain()])
 
 def fetch_ocsp(request_bytes, url):
     """Fetch an OCSP response using POST, GET, and GET with URL encoding.
@@ -143,6 +170,9 @@ def test_multidomain():
 def test_dns_challenge():
     auth_and_issue([random_domain(), random_domain()], chall_type="dns-01")
 
+def test_http_challenge():
+    auth_and_issue([random_domain(), random_domain()], chall_type="http-01")
+
 def test_issuer():
     """
     Issue a certificate, fetch its chain, and verify the chain and
@@ -176,11 +206,6 @@ def test_gsb_lookups():
     """Attempt issuances for a GSB-blocked domain, and expect it to fail. Also
        check the gsb-test-srv's count of received queries to ensure it got a
        request."""
-    # TODO(jsha): Once gsbv4 is enabled in both config and config-next, remove
-    # this early return.
-    if not default_config_dir.startswith("test/config-next"):
-        return
-
     hostname = "honest.achmeds.discount.hosting.com"
     chisel.expect_problem("urn:acme:error:unauthorized",
         lambda: auth_and_issue([hostname]))
@@ -245,7 +270,7 @@ def random_domain():
     return "rand.%x.xyz" % random.randrange(2**32)
 
 def test_expiration_mailer():
-    email_addr = "integration.%x@boulder.local" % random.randrange(2**16)
+    email_addr = "integration.%x@boulder" % random.randrange(2**16)
     cert, _ = auth_and_issue([random_domain()], email=email_addr)
     # Check that the expiration mailer sends a reminder
     expiry = datetime.datetime.strptime(cert.body.get_notAfter(), '%Y%m%d%H%M%SZ')
@@ -266,20 +291,56 @@ def test_expiration_mailer():
         raise Exception("\nExpiry mailer failed: expected 2 emails, got %d" % mailcount)
 
 def test_revoke_by_account():
-    cert_file_pem = os.path.join(tempdir, "revokeme.pem")
     client = chisel.make_client()
     cert, _ = auth_and_issue([random_domain()], client=client)
-    client.revoke(cert.body)
+    client.revoke(cert.body, 0)
 
+    cert_file_pem = os.path.join(tempdir, "revokeme.pem")
+    with open(cert_file_pem, "w") as f:
+        f.write(OpenSSL.crypto.dump_certificate(
+            OpenSSL.crypto.FILETYPE_PEM, cert.body.wrapped).decode())
+    ee_ocsp_url = "http://localhost:4002"
     wait_for_ocsp_revoked(cert_file_pem, "test/test-ca2.pem", ee_ocsp_url)
     return 0
 
 def test_caa():
-    """Request issuance for two CAA domains, one where we are permitted and one where we are not."""
+    """Request issuance for two CAA domains, one where we are permitted and one where we are not.
+       Two further sub-domains have restricted validation-methods.
+    """
+    if len(caa_authzs) == 0:
+        raise Exception("CAA authzs not prepared for test_caa")
+    for a in caa_authzs:
+        response = requests.get(a.uri)
+        if response.status_code != 200:
+            raise Exception("Unexpected response for CAA authz: ",
+                response.status_code)
+
     auth_and_issue(["good-caa-reserved.com"])
+
+    # Request issuance for recheck.good-caa-reserved.com, which should
+    # now be denied due to CAA.
+    global caa_client
+    chisel.expect_problem("urn:acme:error:caa", lambda: chisel.issue(caa_client, caa_authzs))
 
     chisel.expect_problem("urn:acme:error:caa",
         lambda: auth_and_issue(["bad-caa-reserved.com"]))
+
+    # TODO(@4a6f656c): Once the `CAAValidationMethods` feature flag is enabled by
+    # default, remove this early return.
+    if not default_config_dir.startswith("test/config-next"):
+        return
+
+    chisel.expect_problem("urn:acme:error:caa",
+        lambda: auth_and_issue(["dns-01-only.good-caa-reserved.com"], chall_type="http-01"))
+
+    chisel.expect_problem("urn:acme:error:caa",
+        lambda: auth_and_issue(["http-01-only.good-caa-reserved.com"], chall_type="dns-01"))
+
+    # Note: the additional names are to avoid rate limiting...
+    auth_and_issue(["dns-01-only.good-caa-reserved.com", "www.dns-01-only.good-caa-reserved.com"], chall_type="dns-01")
+    auth_and_issue(["http-01-only.good-caa-reserved.com", "www.http-01-only.good-caa-reserved.com"], chall_type="http-01")
+    auth_and_issue(["dns-01-or-http-01.good-caa-reserved.com", "dns-01-only.good-caa-reserved.com"], chall_type="dns-01")
+    auth_and_issue(["dns-01-or-http-01.good-caa-reserved.com", "http-01-only.good-caa-reserved.com"], chall_type="http-01")
 
 def test_account_update():
     """
@@ -342,7 +403,11 @@ def fakeclock(date):
 def get_future_output(cmd, date):
     return run(cmd, env={'FAKECLOCK': fakeclock(date)})
 
-def test_expired_authz_purger():
+def run_expired_authz_purger():
+    # Note: This test must be run after all other tests that depend on
+    # authorizations added to the database during setup
+    # (e.g. test_expired_authzs_404).
+
     def expect(target_time, num, table):
         out = get_future_output("./bin/expired-authz-purger --config cmd/expired-authz-purger/config.json", target_time)
         if 'via FAKECLOCK' not in out:
@@ -405,16 +470,37 @@ def test_renewal_exemption():
 
 def test_certificates_per_name():
     chisel.expect_problem("urn:acme:error:rateLimited",
-        lambda: auth_and_issue(["lim.it"]))
+        lambda: auth_and_issue([random_domain() + ".lim.it"]))
 
 def test_expired_authzs_404():
-    if len(old_authzs) == 0:
+    # TODO(@4a6f656c): This test is rather broken, since it cannot distinguish
+    # between a 404 due to an expired authz and a 404 due to a non-existant authz.
+    # Further verification is necessary in order to ensure that the 404 is actually
+    # due to an expiration. For now, the new authzs at least provide a form of
+    # canary to detect authz purges.
+    if len(old_authzs) == 0 or len(new_authzs) == 0:
         raise Exception("Old authzs not prepared for test_expired_authzs_404")
+    for a in new_authzs:
+        response = requests.get(a.uri)
+        if response.status_code != 200:
+            raise Exception("Unexpected response for valid authz: ",
+                response.status_code)
     for a in old_authzs:
         response = requests.get(a.uri)
         if response.status_code != 404:
             raise Exception("Unexpected response for expired authz: ",
                 response.status_code)
+
+def test_oversized_csr():
+    # Number of names is chosen to be one greater than the configured RA/CA maxNames
+    numNames = 101
+    # Generate numNames subdomains of a random domain
+    base_domain = random_domain()
+    domains = [ "{0}.{1}".format(str(n),base_domain) for n in range(numNames) ]
+    # We expect issuing for these domains to produce a malformed error because
+    # there are too many names in the request.
+    chisel.expect_problem("urn:acme:error:malformed",
+            lambda: auth_and_issue(domains))
 
 default_config_dir = os.environ.get('BOULDER_CONFIG_DIR', '')
 if default_config_dir == '':
@@ -460,6 +546,38 @@ def test_stats():
     expect_stat(8002, '\ngrpc_client_handling_seconds_count{grpc_method="UpdatePendingAuthorization",grpc_service="sa.StorageAuthority",grpc_type="unary"} ')
     expect_stat(8001, "\ngo_goroutines ")
 
+def test_sct_embedding():
+    if not os.environ.get('BOULDER_CONFIG_DIR', '').startswith("test/config-next"):
+        return
+    certr, authzs = auth_and_issue([random_domain()])
+    certBytes = urllib2.urlopen(certr.uri).read()
+    cert = x509.load_der_x509_certificate(certBytes, default_backend())
+
+    # make sure there is no poison extension
+    try:
+        cert.extensions.get_extension_for_oid(x509.ObjectIdentifier("1.3.6.1.4.1.11129.2.4.3"))
+        raise Exception("certificate contains CT poison extension")
+    except x509.ExtensionNotFound:
+        # do nothing
+        pass
+
+    # make sure there is a SCT list extension
+    try:
+        sctList = cert.extensions.get_extension_for_oid(x509.ObjectIdentifier("1.3.6.1.4.1.11129.2.4.2"))
+    except x509.ExtensionNotFound:
+        raise Exception("certificate doesn't contain SCT list extension")
+    if len(sctList.value) != 2:
+        raise Exception("SCT list contains wrong number of SCTs")
+    for sct in sctList.value:
+        if sct.version != x509.certificate_transparency.Version.v1:
+            raise Exception("SCT contains wrong version")
+        if sct.entry_type != x509.certificate_transparency.LogEntryType.PRE_CERTIFICATE:
+            raise Exception("SCT contains wrong entry type")
+        delta = sct.timestamp - datetime.datetime.now()
+        if abs(delta) > datetime.timedelta(hours=1):
+            raise Exception("Delta between SCT timestamp and now was too great "
+                "%s vs %s (%s)" % (sct.timestamp, datetime.datetime.now(), delta))
+
 exit_status = 1
 tempdir = tempfile.mkdtemp()
 
@@ -471,14 +589,19 @@ def main():
                         help="run the certbot integration tests")
     parser.add_argument('--chisel', dest="run_chisel", action="store_true",
                         help="run integration tests using chisel")
+    parser.add_argument('--load', dest="run_loadtest", action="store_true",
+                        help="run load-generator")
+    parser.add_argument('--filter', dest="test_case_filter", action="store",
+                        help="Regex filter for test cases")
     # allow any ACME client to run custom command for integration
     # testing (without having to implement its own busy-wait loop)
     parser.add_argument('--custom', metavar="CMD", help="run custom command")
-    parser.set_defaults(run_all=False, run_certbot=False, run_chisel=False)
+    parser.set_defaults(run_all=False, run_certbot=False, run_chisel=False,
+        run_loadtest=False, test_case_filter="")
     args = parser.parse_args()
 
-    if not (args.run_all or args.run_certbot or args.run_chisel or args.custom is not None):
-        raise Exception("must run at least one of the letsencrypt or chisel tests with --all, --certbot, --chisel, or --custom")
+    if not (args.run_all or args.run_certbot or args.run_chisel or args.run_loadtest or args.custom is not None):
+        raise Exception("must run at least one of the letsencrypt or chisel tests with --all, --certbot, --chisel, --load or --custom")
 
     now = datetime.datetime.utcnow()
     seventy_days_ago = now+datetime.timedelta(days=-70)
@@ -487,20 +610,33 @@ def main():
     setup_seventy_days_ago()
     startservers.stop()
 
+    now = datetime.datetime.utcnow()
+    twenty_days_ago = now+datetime.timedelta(days=-20)
+    if not startservers.start(race_detection=True, fakeclock=fakeclock(twenty_days_ago)):
+        raise Exception("startservers failed (mocking twenty days ago)")
+    setup_twenty_days_ago()
+    startservers.stop()
+
     if not startservers.start(race_detection=True):
         raise Exception("startservers failed")
 
-    if args.run_all or args.run_chisel:
-        run_chisel()
+    setup_zero_days_ago()
 
-    # Simulate a disconnection to make sure gRPC reconnects work.
-    startservers.bounce_forward()
+    if args.run_all or args.run_chisel:
+        run_chisel(args.test_case_filter)
 
     if args.run_all or args.run_certbot:
         run_client_tests()
 
+    if args.run_all or args.run_loadtest:
+        run_loadtest()
+
     if args.custom:
         run(args.custom)
+
+    run_cert_checker()
+    check_balance()
+    run_expired_authz_purger()
 
     if not startservers.check():
         raise Exception("startservers.check failed")
@@ -508,26 +644,49 @@ def main():
     global exit_status
     exit_status = 0
 
-def run_chisel():
-    # TODO(https://github.com/letsencrypt/boulder/issues/2521): Add TLS-SNI test.
+def run_chisel(test_case_filter):
+    for key, value in globals().items():
+      if callable(value) and key.startswith('test_') and re.search(test_case_filter, key):
+        value()
 
-    test_issuer()
-    test_expired_authz_purger()
-    test_ct_submission()
-    test_gsb_lookups()
-    test_multidomain()
-    test_expiration_mailer()
-    test_caa()
-    test_admin_revoker_cert()
-    test_admin_revoker_authz()
-    test_certificates_per_name()
-    test_ocsp()
-    test_single_ocsp()
-    test_dns_challenge()
-    test_renewal_exemption()
-    test_expired_authzs_404()
-    test_account_update()
-    test_stats()
+def run_loadtest():
+    """Run the load generator for v1 and v2."""
+    latency_data_file = "%s/integration-test-latency.json" % tempdir
+    run("./bin/load-generator \
+            -config test/load-generator/config/integration-test-config.json\
+            -results %s" % latency_data_file)
+
+    latency_data_file = "%s/v2-integration-test-latency.json" % tempdir
+    run("./bin/load-generator \
+            -config test/load-generator/config/v2-integration-test-config.json\
+            -results %s" % latency_data_file)
+
+def check_balance():
+    """Verify that gRPC load balancing across backends is working correctly.
+
+    Fetch metrics from each backend and ensure the grpc_server_handled_total
+    metric is present, which means that backend handled at least one request.
+    """
+    addresses = [
+        "sa1.boulder:8003",
+        "sa2.boulder:8103",
+        "publisher1.boulder:8009",
+        "publisher2.boulder:8109",
+        "va1.boulder:8004",
+        "va2.boulder:8104",
+        "ca1.boulder:8001",
+        "ca2.boulder:8104",
+        "ra1.boulder:8002",
+        "ra2.boulder:8102",
+    ]
+    for address in addresses:
+        metrics = requests.get("http://%s/metrics" % address)
+        if not "grpc_server_handled_total" in metrics.text:
+            raise Exception("no gRPC traffic processed by %s; load balancing problem?"
+                % address)
+
+def run_cert_checker():
+    run("./bin/cert-checker -config %s/cert-checker.json" % default_config_dir)
 
 if __name__ == "__main__":
     try:

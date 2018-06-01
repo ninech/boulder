@@ -11,6 +11,7 @@ import (
 
 	caPB "github.com/letsencrypt/boulder/ca/proto"
 	corepb "github.com/letsencrypt/boulder/core/proto"
+	pubpb "github.com/letsencrypt/boulder/publisher/proto"
 	rapb "github.com/letsencrypt/boulder/ra/proto"
 	"github.com/letsencrypt/boulder/revocation"
 	sapb "github.com/letsencrypt/boulder/sa/proto"
@@ -120,20 +121,19 @@ type StorageGetter interface {
 	GetPendingAuthorization(ctx context.Context, req *sapb.GetPendingAuthorizationRequest) (*Authorization, error)
 	GetCertificate(ctx context.Context, serial string) (Certificate, error)
 	GetCertificateStatus(ctx context.Context, serial string) (CertificateStatus, error)
-	CountCertificatesRange(ctx context.Context, earliest, latest time.Time) (int64, error)
 	CountCertificatesByNames(ctx context.Context, domains []string, earliest, latest time.Time) (countByDomain []*sapb.CountByNames_MapElement, err error)
 	CountCertificatesByExactNames(ctx context.Context, domains []string, earliest, latest time.Time) (countByDomain []*sapb.CountByNames_MapElement, err error)
 	CountRegistrationsByIP(ctx context.Context, ip net.IP, earliest, latest time.Time) (int, error)
 	CountRegistrationsByIPRange(ctx context.Context, ip net.IP, earliest, latest time.Time) (int, error)
 	CountPendingAuthorizations(ctx context.Context, regID int64) (int, error)
-	CountPendingOrders(ctx context.Context, regID int64) (int, error)
+	CountOrders(ctx context.Context, acctID int64, earliest, latest time.Time) (int, error)
 	GetSCTReceipt(ctx context.Context, serial, logID string) (SignedCertificateTimestamp, error)
 	CountFQDNSets(ctx context.Context, window time.Duration, domains []string) (count int64, err error)
 	FQDNSetExists(ctx context.Context, domains []string) (exists bool, err error)
 	PreviousCertificateExists(ctx context.Context, req *sapb.PreviousCertificateExistsRequest) (exists *sapb.Exists, err error)
 	GetOrder(ctx context.Context, req *sapb.OrderRequest) (*corepb.Order, error)
 	GetOrderForNames(ctx context.Context, req *sapb.GetOrderForNamesRequest) (*corepb.Order, error)
-	GetOrderAuthorizations(ctx context.Context, req *sapb.GetOrderAuthorizationsRequest) (map[string]*Authorization, error)
+	GetValidOrderAuthorizations(ctx context.Context, req *sapb.GetValidOrderAuthorizationsRequest) (map[string]*Authorization, error)
 	CountInvalidAuthorizations(ctx context.Context, req *sapb.CountInvalidAuthorizationsRequest) (count *sapb.Count, err error)
 	GetAuthorizations(ctx context.Context, req *sapb.GetAuthorizationsRequest) (*sapb.Authorizations, error)
 }
@@ -146,7 +146,7 @@ type StorageAdder interface {
 	UpdatePendingAuthorization(ctx context.Context, authz Authorization) error
 	FinalizeAuthorization(ctx context.Context, authz Authorization) error
 	MarkCertificateRevoked(ctx context.Context, serial string, reasonCode revocation.Reason) error
-	AddCertificate(ctx context.Context, der []byte, regID int64, ocsp []byte) (digest string, err error)
+	AddCertificate(ctx context.Context, der []byte, regID int64, ocsp []byte, issued *time.Time) (digest string, err error)
 	AddSCTReceipt(ctx context.Context, sct SignedCertificateTimestamp) error
 	RevokeAuthorizationsByDomain(ctx context.Context, domain AcmeIdentifier) (finalized, pending int64, err error)
 	DeactivateRegistration(ctx context.Context, id int64) error
@@ -155,6 +155,7 @@ type StorageAdder interface {
 	SetOrderProcessing(ctx context.Context, order *corepb.Order) error
 	FinalizeOrder(ctx context.Context, order *corepb.Order) error
 	AddPendingAuthorizations(ctx context.Context, req *sapb.AddPendingAuthorizationsRequest) (*sapb.AuthorizationIDs, error)
+	SetOrderError(ctx context.Context, order *corepb.Order) error
 }
 
 // StorageAuthority interface represents a simple key/value
@@ -169,4 +170,5 @@ type StorageAuthority interface {
 type Publisher interface {
 	SubmitToCT(ctx context.Context, der []byte) error
 	SubmitToSingleCT(ctx context.Context, logURL, logPublicKey string, der []byte) error
+	SubmitToSingleCTWithResult(ctx context.Context, req *pubpb.Request) (*pubpb.Result, error)
 }

@@ -12,7 +12,6 @@ go get \
   github.com/golang/mock/mockgen \
   github.com/golang/protobuf/proto \
   github.com/golang/protobuf/protoc-gen-go \
-  github.com/jsha/listenbuddy \
   github.com/kisielk/errcheck \
   github.com/mattn/goveralls \
   github.com/modocache/gover \
@@ -25,7 +24,9 @@ go get \
  cd protobuf-2.6.1 && ./configure --prefix=$HOME && make && make install) &
 
 # Wait for all the background commands to finish.
-wait
+# capture their error codes, then if bad, exit.
+wait %1 || exit $?
+wait %2 || exit $?
 
 # Create the database and roles
 ./test/create_db.sh

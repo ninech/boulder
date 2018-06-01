@@ -12,7 +12,6 @@ import (
 
 	"gopkg.in/square/go-jose.v2"
 
-	"github.com/letsencrypt/boulder/features"
 	"github.com/letsencrypt/boulder/probs"
 	"github.com/letsencrypt/boulder/revocation"
 )
@@ -37,6 +36,7 @@ const (
 	StatusUnknown     = AcmeStatus("unknown")     // Unknown status; the default
 	StatusPending     = AcmeStatus("pending")     // In process; client has next action
 	StatusProcessing  = AcmeStatus("processing")  // In process; server has next action
+	StatusReady       = AcmeStatus("ready")       // Order is ready for finalization
 	StatusValid       = AcmeStatus("valid")       // Object is valid
 	StatusInvalid     = AcmeStatus("invalid")     // Validation failed
 	StatusRevoked     = AcmeStatus("revoked")     // Object no longer valid
@@ -70,7 +70,6 @@ const (
 const (
 	ChallengeTypeHTTP01   = "http-01"
 	ChallengeTypeTLSSNI01 = "tls-sni-01"
-	ChallengeTypeTLSSNI02 = "tls-sni-02"
 	ChallengeTypeDNS01    = "dns-01"
 )
 
@@ -83,8 +82,6 @@ func ValidChallenge(name string) bool {
 		fallthrough
 	case ChallengeTypeDNS01:
 		return true
-	case ChallengeTypeTLSSNI02:
-		return features.Enabled(features.AllowTLS02Challenges)
 
 	default:
 		return false
@@ -237,14 +234,14 @@ type Challenge struct {
 	URL string `json:"url,omitempty"`
 
 	// Used by http-01, tls-sni-01, and dns-01 challenges
-	Token string `json:"token,omitempty"` // Used by http-00, tls-sni-00, and dns-00 challenges
+	Token string `json:"token,omitempty"`
 
-	// The KeyAuthorization provided by the client to start validation of
-	// the challenge. Set during
-	//
-	//   POST /acme/authz/:authzid/:challid
-	//
-	// Used by http-01, tls-sni-01, and dns-01 challenges
+	// The expected KeyAuthorization for validation of the challenge. Populated by
+	// the RA prior to passing the challenge to the VA. For legacy reasons this
+	// field is called "ProvidedKeyAuthorization" because it was initially set by
+	// the content of the challenge update POST from the client. It is no longer
+	// set that way and should be renamed to "KeyAuthorization".
+	// TODO(@cpu): Rename `ProvidedKeyAuthorization` to `KeyAuthorization`.
 	ProvidedKeyAuthorization string `json:"keyAuthorization,omitempty"`
 
 	// Contains information about URLs used or redirected to and IPs resolved and
@@ -283,8 +280,6 @@ func (ch Challenge) RecordsSane() bool {
 			}
 		}
 	case ChallengeTypeTLSSNI01:
-		fallthrough
-	case ChallengeTypeTLSSNI02:
 		if len(ch.ValidationRecord) > 1 {
 			return false
 		}
@@ -402,6 +397,21 @@ func (authz *Authorization) FindChallenge(challengeID int64) int {
 		}
 	}
 	return -1
+}
+
+// SolvedBy will look through the Authorizations challenges, returning the type
+// of the *first* challenge it finds with Status: valid, or "" if no challenge
+// is valid.
+func (authz *Authorization) SolvedBy() string {
+	if len(authz.Challenges) == 0 {
+		return ""
+	}
+	for _, chal := range authz.Challenges {
+		if chal.Status == StatusValid {
+			return chal.Type
+		}
+	}
+	return ""
 }
 
 // JSONBuffer fields get encoded and decoded JOSE-style, in base64url encoding
@@ -591,3 +601,10 @@ type Order struct {
 	Authorizations    []Authorization
 	Status            AcmeStatus
 }
+
+// SCTDER is a convenience type
+type SCTDERs [][]byte
+
+// CertDER is a convenience type that helps differentiate what the
+// underlying byte slice contains
+type CertDER []byte
